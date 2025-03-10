@@ -6,13 +6,13 @@
 
 Ensure putting the files into proper folders. The functional folder structure should be like this
 
-```python
-├── embedding
-│   ├── test.ipynb
-│   └── video2img.py
-└── videos
-    └── gui_world_104.mp4
-```
+project/
+├── README.md
+├── embedding/
+│ ├── test.ipynb
+│ └── video2tensor.py
+├── videos/
+│ └── gui_world_104.py
 
 ### Step 2
 Put the videos to be embedded in folder videos

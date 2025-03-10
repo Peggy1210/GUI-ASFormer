@@ -61,7 +61,7 @@ class ImgEmbedding:
 
 
 
-def video2img(videos_folder: str, ft_folder: str, target_fps: int,batch_size:tuple,embedding:ImgEmbedding):
+def video2tensor(videos_folder: str, ft_folder: str, target_fps: int,batch_size:tuple,embedding:ImgEmbedding):
     """
     Function to extract frames from videos using cv2
 
@@ -141,7 +141,7 @@ if __name__ == "main":
     embedding.set_model(model_name="test")
     batch_size = (192,192)
     
-    video2img(videos_folder=videos_folder,target_fps=target_fps,batch_size=batch_size,ft_folder=ft_folder,embedding=embedding)
+    video2tensor(videos_folder=videos_folder,target_fps=target_fps,batch_size=batch_size,ft_folder=ft_folder,embedding=embedding)
 
 
 
