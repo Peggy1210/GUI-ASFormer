@@ -5,7 +5,8 @@
 ### Step 1
 
 Ensure putting the files into proper folders. The functional folder structure should be like this
-```
+
+```python
 ├── embedding
 │   ├── test.ipynb
 │   └── video2img.py
