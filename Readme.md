@@ -11,5 +11,5 @@ Put the videos to be embedded in folder videos.
 
 ### Step 3
 Run the notebook(recommended) or `video2img.py`.
-You may find duration info of each video in `basic_videos_info.json`.
+You may find duration info of each video in `basic_videos_info.json`
 
