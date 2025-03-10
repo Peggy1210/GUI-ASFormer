@@ -7,11 +7,17 @@
 Ensure putting the files into proper folders. The functional folder structure should be like this
 
 project/
+
 ├── README.md
+
 ├── embedding/
+
 │ ├── test.ipynb
+
 │ └── video2tensor.py
+
 ├── videos/
+
 │ └── gui_world_104.py
 
 ### Step 2
