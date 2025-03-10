@@ -4,21 +4,7 @@
 
 ### Step 1
 
-Ensure putting the files into proper folders. The functional folder structure should be like this
-
-project/
-
-├── README.md
-
-├── embedding/
-
-│ ├── test.ipynb
-
-│ └── video2tensor.py
-
-├── videos/
-
-│ └── gui_world_104.py
+Download the entire files in the current branch. Ensure that the files are put into the proper folders.
 
 ### Step 2
 Put the videos to be embedded in folder videos
