@@ -4,7 +4,7 @@
 
 ### Step 1
 
-Download the entire files in the current branch. Ensure that the files are put into the proper folders.
+`git clone -b llei https://github.com/Peggy1210/eecs545-final-project.git`
 
 ### Step 2
 Put the videos to be embedded in folder videos
