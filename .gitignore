@@ -1,7 +1,7 @@
 /embedding/__pycache__
-/embedding/.DS_Store
 /embedding_prev
 /features
 2410.19100v3.pdf
 basic_videos_info.jsonl
-.DS_Store
+**/.DS_Store
+.gitignore
