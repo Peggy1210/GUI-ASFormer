@@ -128,7 +128,7 @@ def video2tensor(videos_folder: str, ft_folder: str, target_fps: int,batch_size:
         cv2.destroyAllWindows()
         del features,frames_tensor
     
-    with open(os.path.join(os.getcwd(),'../basic_videos_info.jsonl'),'w') as f:
+    with open(os.path.join(os.getcwd(),'../videos_basic_info.jsonl'),'w') as f:
         for line in video_basic_info:
             f.write(json.dumps(line)+'\n')
 
