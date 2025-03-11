@@ -119,10 +119,10 @@ def video2tensor(videos_folder: str, ft_folder: str, target_fps: int,batch_size:
         cap.release()
         
         frames_tensor = torch.stack([embedding.transforms(frame) for frame in frames])
-        print(f"extracting features from {name}")
+        # print(f"extracting features from {name}")
         features = embedding.extract_features(frames_tensor)
-        print(f"{name} feature extraction completed.")
-        print(f"shape:{features.shape}")
+        # print(f"{name} feature extraction completed.")
+        # print(f"shape:{features.shape}")
         np.save(os.path.join(ft_folder,f'{name}.npy'),features.numpy())
         
         cv2.destroyAllWindows()
