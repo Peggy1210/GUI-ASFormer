@@ -8,52 +8,66 @@
 from tqdm import tqdm
 import pandas as pd
 import json
+import os
+
+DATASET = "website"
 
 data = []
-with open('website.jsonl') as f:
+with open(f'{DATASET}.jsonl', 'r') as f:
     for line in f:
         data.append(json.loads(line))
 
-import pandas as pd
-import os
+video_len = {}
+with open('video_len.json', 'r') as f:
+    video_len = json.load(f)
+video_len_keys = list(video_len.keys())
 
 LEGTH = len(data)
-DATA_PATH = "data/annotation"
+DATA_PATH = f"data/{DATASET}"
 os.makedirs(DATA_PATH, exist_ok=True)
-for i in tqdm(range(LEGTH)):
-    df = []
-    action_id = 1
-    acc = 0
+os.makedirs(f"{DATA_PATH}/groundTruth", exist_ok=True)
+action_dict = { 'start': 0 }
+action_id_inc = 0
+for i in tqdm(range(LEGTH)):    
     video_id = data[i]["video_path"].split("/")[-1].split(".")[0]
-    with open(f"{DATA_PATH}/{video_id}.txt", "w") as f:
+    with open(f"{DATA_PATH}/groundTruth/{video_id}.txt", "w") as f:
         frames = sorted(data[i]["keyframes"], key=lambda x: x["frame"])
-        for frame in frames:
-            #   df.append({
-            #       "video": video_id,
-            #       "action_id": action_id,
-            #       "sub_goal": frame["sub_goal"],
-            #       "start": frame["frame"],
 
-            #   })
-
-            # The output format will be frame-wise action_ids separated by lines. For example:
+        # The output format will be frame-wise action_ids separated by lines. For example:
             # /video1.txt
-            # 0
-            # 0
-            # 0
-            # 1
-            # 1
-            # 2
-            # 3
+            # start
+            # start
+            # start
+            # action_1
+            # action_1
+            # action_2
+            # action_3
+
+        acc = 1
+        action = 'start'
+        for frame in frames:
+            # Print out the previous action until the current frame
             while acc < frame["frame"]:
-                f.write(f"{action_id - 1}\n")
+                f.write(f"{action}\n")
                 acc += 1
 
-            action_id += 1
+            # Get the current action
+            action = f'{frame["mouse"]}_{frame["keyboard"]}_{frame["keyboardOperation"] != ""}'
 
-        # TODO: Get the legnth of each videos and print the last action_id until the end
-        f.write(f"{action_id - 1}\n")
+            # Add the action to the dictionary if it does not exist
+            if action not in action_dict.keys():
+                action_id_inc += 1
+                action_dict[action] = action_id_inc
 
-#   df = pd.DataFrame(df)
-#   df["end"] = df["start"].shift(-1).fillna(0).astype(int) - 1
-#   df.to_csv(f"{DATA_PATH}/{video_id}.csv", index=False)
+        # Print the last action_id until the end
+        if video_id in video_len_keys:
+            while acc <= video_len[video_id]:
+                f.write(f"{action}\n")
+                acc += 1
+        else:
+            f.write(f"{action}\n")
+
+# Write mapping file
+with open(f"{DATA_PATH}/mapping.txt", "w") as f:
+    for action, id in action_dict.items():
+        f.write(f"{id}, {action}\n")
