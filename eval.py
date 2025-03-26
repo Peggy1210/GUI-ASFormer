@@ -35,7 +35,7 @@ def get_labels_start_end_time(frame_wise_labels, bg_class=["background"]):
 def levenstein(p, y, norm=False):
     m_row = len(p)    
     n_col = len(y)
-    D = np.zeros([m_row+1, n_col+1], np.float)
+    D = np.zeros([m_row+1, n_col+1], np.float64)
     for i in range(m_row+1):
         D[i, 0] = i
     for i in range(n_col+1):
@@ -205,7 +205,8 @@ def main():
     cnt_split_dict = {
         '50salads':5,
         'gtea':4,
-        'breakfast':4
+        'breakfast':4,
+        'website':2
     }
     
     parser = argparse.ArgumentParser()

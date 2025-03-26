@@ -51,6 +51,8 @@ if args.dataset == "gtea":
 if args.dataset == 'breakfast':
     lr = 0.0001
 
+if args.dataset == 'website':
+    channel_mask_rate = 0.5
 
 vid_list_file = "./data/"+args.dataset+"/splits/train.split"+args.split+".bundle"
 vid_list_file_tst = "./data/"+args.dataset+"/splits/test.split"+args.split+".bundle"
