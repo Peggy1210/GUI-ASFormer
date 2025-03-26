@@ -1,9 +1,8 @@
 ################################
-# This python file will generate training labels from the annotaion file from GUI-World dataset.
-# Please download the corresponding annotation file from:
+# This python script will generate training labels from the annotaion file from GUI-World dataset.
+# Please download the corresponding annotation file (.jsonl) from:
 # https://huggingface.co/datasets/shuaishuaicdp/GUI-World/tree/main/Annotation/train
-# The output files will be stored under "<your_directory>/data/annotation".
-# Please move this file to the directory with the same level of model to enable training. 
+# The output files will be stored under `<your_directory>/data/annotation`.
 ################################
 from tqdm import tqdm
 import pandas as pd
@@ -11,6 +10,7 @@ import json
 import os
 
 DATASET = "website"
+VIDEO_INFO = "video_len.json"
 
 data = []
 with open(f'{DATASET}.jsonl', 'r') as f:
@@ -18,7 +18,7 @@ with open(f'{DATASET}.jsonl', 'r') as f:
         data.append(json.loads(line))
 
 video_len = {}
-with open('video_len.json', 'r') as f:
+with open(VIDEO_INFO, 'r') as f:
     video_len = json.load(f)
 video_len_keys = list(video_len.keys())
 
