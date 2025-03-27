@@ -2,4 +2,6 @@
 /embedding_prev
 /features
 2410.19100v3.pdf
-basic_videos_info.jsonl
+videos_basic_info.jsonl
+.venv/
+

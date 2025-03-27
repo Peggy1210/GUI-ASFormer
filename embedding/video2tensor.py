@@ -44,7 +44,7 @@ class ImgEmbedding:
     def set_model(self,model_name:str):
         if model_name == "test":
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            self.model = timm.create_model('swinv2_base_window12_192_22k', pretrained=True).to(self.device).eval()
+            self.model = timm.create_model('swinv2_base_window8_256', pretrained=True).to(self.device).eval()
             self.model_data_cofig = timm.data.resolve_model_data_config(self.model)
             self.spatial_attention = SpatialAttention(in_channels=1024).to(self.device)
             self.transforms = transforms.Compose([
@@ -54,10 +54,24 @@ class ImgEmbedding:
                                 ])
 
     def extract_features(self,framesmats):
+        all_embeddings = []
         with torch.no_grad():
-            output = self.model.forward_features(framesmats)
-            output = self.spatial_attention(output.permute(0,3,1,2))
-            return output.cpu()
+            for i in tqdm(range(framesmats.shape[0]), desc="Processing Video"):
+                frame = framesmats[i].unsqueeze(0).to(self.device)
+                embedding = self.model.forward_features(frame)
+
+                embed1, embed2 = embedding[:, :4, :4, :], embedding[:, 4:, 4:, :]
+                embed1, embed2 = self.spatial_attention(embed1.permute(0, 3, 1, 2)), self.spatial_attention(embed2.permute(0, 3, 1, 2))
+
+                combined_embedding = torch.cat([embed1, embed2], dim=1)
+                all_embeddings.append(combined_embedding.cpu())
+
+            final_embedding = torch.cat(all_embeddings, dim=0)
+            final_embedding = final_embedding.permute(1, 0)
+            print("final embedding shape:", final_embedding.shape)
+            # output = self.model.forward_features(framesmats)
+            # output = self.spatial_attention(output.permute(0,3,1,2))
+            return final_embedding
 
 
 
