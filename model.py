@@ -299,15 +299,26 @@ class Decoder(nn.Module):
         out = self.conv_out(feature) * mask[:, 0:1, :]
 
         return out, feature
-    
+
+class FrameDiffLayer(nn.Module):
+    def __init__(self):
+        super(FrameDiffLayer, self).__init__()
+
+    def forward(self, x):
+        frameDiff = None
+        return frameDiff
+
+
 class MyTransformer(nn.Module):
     def __init__(self, num_decoders, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate):
         super(MyTransformer, self).__init__()
+        self.frameDiff = FrameDiffLayer()
         self.encoder = Encoder(num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate, att_type='sliding_att', alpha=1)
         self.decoders = nn.ModuleList([copy.deepcopy(Decoder(num_layers, r1, r2, num_f_maps, num_classes, num_classes, att_type='sliding_att', alpha=exponential_descrease(s))) for s in range(num_decoders)]) # num_decoders
         
         
     def forward(self, x, mask):
+        frameDiff = self.frameDiff(x) # This will be forward to the second encoder
         out, feature = self.encoder(x, mask)
         outputs = out.unsqueeze(0)
         
