@@ -73,22 +73,21 @@ class SpatialAttention(nn.Module):
         x: Features output by the Swin Transformer, shape (B, C, H, W)
         return: Weighted features, shape (B, C)
         """
-        attention_weights = self.conv(x)  # (B, 1, H, W)
+        with torch.no_grad():
+          attention_weights = self.conv(x)  # (B, 1, H, W)
 
-        # **Fix softmax dimension issue**
-        attention_weights = attention_weights.flatten(2)  # Reshape to (B, 1, H*W)
-        attention_weights = F.softmax(attention_weights, dim=-1)  # Apply softmax along the last dimension
-        attention_weights = attention_weights.view_as(self.conv(x))  # Reshape back to (B, 1, H, W)
+          # Apply softmax across width (H) and height (W)
+          attention_weights = F.softmax(attention_weights, dim=-2) * F.softmax(attention_weights, dim=-1)
 
-        # **Apply attention weights**
-        attended_features = torch.sum(x * attention_weights, dim=(-2, -1))  # Sum over spatial dimensions, resulting in (B, C)
+          # **Apply attention weights**
+          attended_features = torch.sum(x * attention_weights, dim=(-2, -1))  # Sum over spatial dimensions, resulting in (B, C)
 
         return attended_features
 
 class SWin:
-    def __init__(self):
-        pass
-        
+    def __init__(self, batch_size=16):
+        self.batch_size = batch_size
+
     def set_model(self,model_name:str):
         if model_name == "test":
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -102,25 +101,23 @@ class SWin:
                                 ])
 
     def extract_features(self,framesmats):
+        num_frames = framesmats.shape[0]
         all_embeddings = []
         with torch.no_grad():
-            for i in tqdm(range(framesmats.shape[0]), desc="Processing Video"):
-                frame = framesmats[i].unsqueeze(0).to(self.device)
-                embedding = self.model.forward_features(frame)
+            for i in range(0, num_frames, self.batch_size):
+                frame = framesmats[i:i + self.batch_size].to(self.device) # (batch_size, C, H, W)
+                embedding = self.model.forward_features(frame) # (batch_size, H, W, C)
 
-                embed1, embed2 = embedding[:, :4, :4, :], embedding[:, 4:, 4:, :]
-                embed1, embed2 = self.spatial_attention(embed1.permute(0, 3, 1, 2)), self.spatial_attention(embed2.permute(0, 3, 1, 2))
+                embed1 = self.spatial_attention(embedding.permute(0, 3, 1, 2)) # Spatial Attention: (batch_size, C)
+                embed2 = embedding.mean(dim=(1, 2)) # Global Average Pooling: (batch_size, C)
 
-                combined_embedding = torch.cat([embed1, embed2], dim=1)
+                combined_embedding = torch.cat([embed1, embed2], dim=1) # (batch_size, 2*C)
+                
                 all_embeddings.append(combined_embedding.cpu())
-
-            final_embedding = torch.cat(all_embeddings, dim=0)
-            final_embedding = final_embedding.permute(1, 0)
-            print("final embedding shape:", final_embedding.shape)
-            # output = self.model.forward_features(framesmats)
-            # output = self.spatial_attention(output.permute(0,3,1,2))
-            return final_embedding
-
+                if self.device == "gpu": torch.cuda.empty_cache()
+        
+        all_embeddings = torch.cat(all_embeddings, dim=0).permute(1, 0)
+        return all_embeddings
 
 
 def video2tensor(videos_folder: str, ft_folder: str, target_fps: int, batch_size:tuple, embedding, video_info=False, batch=False):
