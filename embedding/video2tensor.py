@@ -28,21 +28,21 @@ video_fmts = ["mp4", "m4v", "mkv", "webm", "mov", "avi", "wmv", "mpg", "flv"]
 class I3DBlock(nn.Module):
     def __init__(self):
         super(I3DBlock, self).__init__()
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
         self.i3d = InceptionI3d(num_classes=400, in_channels=3)
         self.i3d.load_state_dict(torch.load('rgb_imagenet.pt'))
         self.i3d.eval()
 
-        # Remove the classification head
-        self.i3d.replace_logits(512)  # Remove final FC layer (I3D default is 400 classes)
+        self.i3d.to(self.device)
 
-        # Add a new 1x1 conv to expand from 1024 -> 2048
-        self.conv3d = nn.Conv3d(1024, 2048, kernel_size=1, stride=1, bias=True)
+        # Add a convolutional layer to expand from 1024 -> 2048
+        self.conv = nn.Conv3d(1024, 2048, kernel_size=1).to(self.device)
 
     def forward(self, x):
         with torch.no_grad():
           x = self.i3d.extract_features(x)  # Extract I3D features
-          x = self.conv3d(x)  # Expand to 2048 channels
-          x = x.mean(dim=[2, 3, 4])  # Global average pooling (T, H, W)
+          x = self.conv(x)
         return x  # Shape: (Batch, 2048)
 
 class I3D:
@@ -53,14 +53,14 @@ class I3D:
                             transforms.ToTensor(), # (C, H, W)
                             transforms.Normalize(mean=[0.45, 0.45, 0.45], std=[0.225, 0.225, 0.225])
                         ])
-        self.i3d = I3DBlock()
+        self.i3d = I3DBlock().to(self.device)
 
     def extract_features(self, framesmats):
         with torch.no_grad(): 
-            features = self.i3d(framesmats.permute(1, 0, 2, 3).unsqueeze(0))  # Extract deep features
-            features = features.squeeze(0)
+            features = self.i3d(framesmats.permute(1, 0, 2, 3).unsqueeze(0).to(self.device))  # Extract deep features
+            features = features.squeeze(0).squeeze(2).squeeze(2)
 
-        return features
+        return features.cpu()
     
 
 class SpatialAttention(nn.Module):
@@ -123,7 +123,7 @@ class SWin:
 
 
 
-def video2tensor(videos_folder: str, ft_folder: str, target_fps: int, batch_size:tuple, embedding):
+def video2tensor(videos_folder: str, ft_folder: str, target_fps: int, batch_size:tuple, embedding, video_info=False, batch=False):
     """
     Function to extract frames from videos using cv2
 
@@ -190,16 +190,17 @@ def video2tensor(videos_folder: str, ft_folder: str, target_fps: int, batch_size
         cv2.destroyAllWindows()
         del features,frames_tensor
     
-    with open(os.path.join(os.getcwd(),'../videos_basic_info.jsonl'),'w') as f:
-        for line in video_basic_info:
-            f.write(json.dumps(line)+'\n')
+    if video_info:
+        with open(os.path.join(os.getcwd(),'../videos_basic_info.jsonl'),'w') as f:
+            for line in video_basic_info:
+                f.write(json.dumps(line)+'\n')
 
 if __name__ == "main":
     abspath = os.path.join(os.getcwd(),'..')
     videos_folder = os.path.join(abspath,'videos')
     ft_folder = os.path.join(abspath,'features')
     target_fps = 30
-    embedding = ImgEmbedding()
+    embedding = SWin()
     embedding.set_model(model_name="test")
     batch_size = (192,192)
     
