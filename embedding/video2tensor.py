@@ -36,14 +36,14 @@ class I3DBlock(nn.Module):
 
         self.i3d.to(self.device)
 
-        # Add a convolutional layer to expand from 1024 -> 2048
+        # Add a convolutional layer to expand from (1024, 1, 1) -> 2048
         self.conv = nn.Conv3d(1024, 2048, kernel_size=1).to(self.device)
 
-    def forward(self, x):
+    def forward(self, x): # (B, C, H, W)
         with torch.no_grad():
-          x = self.i3d.extract_features(x)  # Extract I3D features
-          x = self.conv(x)
-        return x  # Shape: (Batch, 2048)
+            x = self.i3d.extract_features(x)  # Extract I3D features (B, 1024, T/8, 1, 1)
+            x = self.conv(x) # (B, 2048, T/8, 1, 1)
+        return x
 
 class I3D:
     def __init__(self):
@@ -55,11 +55,12 @@ class I3D:
                         ])
         self.i3d = I3DBlock().to(self.device)
 
-    def extract_features(self, framesmats):
-        with torch.no_grad(): 
-            features = self.i3d(framesmats.permute(1, 0, 2, 3).unsqueeze(0).to(self.device))  # Extract deep features
-            features = features.squeeze(0).squeeze(2).squeeze(2)
+    def extract_features(self, framesmats): # (T, C, H, W)
+        with torch.no_grad():
+            features = self.i3d(framesmats.permute(1, 0, 2, 3).unsqueeze(0).to(self.device))  # Extract deep features 
+            features = features.squeeze(0).squeeze(2).squeeze(2) # (2048, T/8)
 
+        if self.device == "gpu": torch.cuda.empty_cache()
         return features.cpu()
     
 
