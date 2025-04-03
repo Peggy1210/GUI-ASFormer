@@ -9,10 +9,59 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
-import json 
+from pytorch_i3d import InceptionI3d
+import json
+import random
+
+seed = 42
+
+torch.manual_seed(seed)
+torch.cuda.manual_seed_all(seed)  # If using multiple GPUs
+np.random.seed(seed)
+random.seed(seed)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 
 
 video_fmts = ["mp4", "m4v", "mkv", "webm", "mov", "avi", "wmv", "mpg", "flv"]
+    
+class I3DBlock(nn.Module):
+    def __init__(self):
+        super(I3DBlock, self).__init__()
+        self.i3d = InceptionI3d(num_classes=400, in_channels=3)
+        self.i3d.load_state_dict(torch.load('rgb_imagenet.pt'))
+        self.i3d.eval()
+
+        # Remove the classification head
+        self.i3d.replace_logits(512)  # Remove final FC layer (I3D default is 400 classes)
+
+        # Add a new 1x1 conv to expand from 1024 -> 2048
+        self.conv3d = nn.Conv3d(1024, 2048, kernel_size=1, stride=1, bias=True)
+
+    def forward(self, x):
+        with torch.no_grad():
+          x = self.i3d.extract_features(x)  # Extract I3D features
+          x = self.conv3d(x)  # Expand to 2048 channels
+          x = x.mean(dim=[2, 3, 4])  # Global average pooling (T, H, W)
+        return x  # Shape: (Batch, 2048)
+
+class I3D:
+    def __init__(self):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.transforms = transforms.Compose([
+                            # image to num
+                            transforms.ToTensor(), # (C, H, W)
+                            transforms.Normalize(mean=[0.45, 0.45, 0.45], std=[0.225, 0.225, 0.225])
+                        ])
+        self.i3d = I3DBlock()
+
+    def extract_features(self, framesmats):
+        with torch.no_grad(): 
+            features = self.i3d(framesmats.permute(1, 0, 2, 3).unsqueeze(0))  # Extract deep features
+            features = features.squeeze(0)
+
+        return features
+    
 
 class SpatialAttention(nn.Module):
     def __init__(self, in_channels):
@@ -36,8 +85,7 @@ class SpatialAttention(nn.Module):
 
         return attended_features
 
-
-class ImgEmbedding:
+class SWin:
     def __init__(self):
         pass
         
@@ -75,7 +123,7 @@ class ImgEmbedding:
 
 
 
-def video2tensor(videos_folder: str, ft_folder: str, target_fps: int,batch_size:tuple,embedding:ImgEmbedding):
+def video2tensor(videos_folder: str, ft_folder: str, target_fps: int, batch_size:tuple, embedding):
     """
     Function to extract frames from videos using cv2
 
