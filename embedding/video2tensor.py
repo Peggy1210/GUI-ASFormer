@@ -13,15 +13,15 @@ from pytorch_i3d import InceptionI3d
 import json
 import random
 
-seed = 42
+def set_seed(seed=42):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # If using multiple GPUs
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
-torch.manual_seed(seed)
-torch.cuda.manual_seed_all(seed)  # If using multiple GPUs
-np.random.seed(seed)
-random.seed(seed)
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
-
+set_seed()
 
 video_fmts = ["mp4", "m4v", "mkv", "webm", "mov", "avi", "wmv", "mpg", "flv"]
     
