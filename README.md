@@ -2,7 +2,7 @@
 Pytorch == 2.5.0, python == 3.11, CUDA=12.6
 
 ## Guideline
-It's the modified version of ASFormer. This DualAsformer has 1 deep encoder for features from low-resolution images and and 1 lightweighted encoder for features from high-resolution images.
+It's the modified version of ASFormer. This Dual-Encoder ASFormer has 1 deep encoder for features from low-resolution images and and 1 lightweighted encoder for features from high-resolution images.
 
 ## Data Location
 Make sure your data is at the same location with the model. 
