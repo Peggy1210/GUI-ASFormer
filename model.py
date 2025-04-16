@@ -305,7 +305,9 @@ class FrameDiffLayer(nn.Module):
         super(FrameDiffLayer, self).__init__()
 
     def forward(self, x):
-        frameDiff = None
+        frameDiff = x[:, :, 1:] - x[:, :, :-1]
+        pad = torch.zeros(x.size(0), x.size(1), 1).to(x.device)
+        frameDiff = torch.cat((pad, frameDiff), dim=2)
         return frameDiff
 
 
