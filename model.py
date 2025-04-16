@@ -247,10 +247,46 @@ class PositionalEncoding(nn.Module):
 
     def forward(self, x):
         return x + self.pe[:, :, 0:x.shape[2]]
+    
+class MultiScaleTemporalAttModule(nn.Module):
+    def __init__(self, input_dim, r, att_type, stage, num_heads, window_sizes=[5, 15, 30]):
+        super().__init__()
+        self.branches = nn.ModuleList([MultiHeadAttLayer(
+                input_dim, input_dim, input_dim,
+                r1=r, r2=r, r3=r,
+                bl=w,                    # Use window size as block size
+                stage=stage,
+                att_type=att_type,
+                num_head=num_heads
+            ) for w in window_sizes])
+        self.conv1d = nn.Conv1d(input_dim * len(window_sizes), input_dim, kernel_size=1)
+
+    def forward(self, x1, x2, mask):
+        outs = [branch(x1, x2, mask) for branch in self.branches]
+        out = torch.cat(outs, dim=1)
+        out = self.conv1d(out)
+        return out
+
+class MultiScaleTemporalConv(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_sizes=[3, 5, 7], dilations=[1, 2, 4]):
+        super().__init__()
+        self.branches = nn.ModuleList([copy.deepcopy(nn.Conv1d(in_channels, in_channels, kernel_size=k, padding=d*(k-1)//2, dilation=d)) for k, d in zip(kernel_sizes, dilations)])
+        self.conv1d = nn.Conv1d(in_channels * len(kernel_sizes), out_channels, kernel_size=1)
+
+    def forward(self, x):
+        # print("input of ms temp conv:", x.shape)
+        outs = [branch(x) for branch in self.branches]
+        out = torch.cat(outs, dim=1)
+        # print("output of ms temp conv:", out.shape)
+        out = self.conv1d(out)
+        # print("output of 1d conv:", out.shape)
+        return out
 
 class Encoder(nn.Module):
     def __init__(self, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate, att_type, alpha):
         super(Encoder, self).__init__()
+        # self.mstemp_att = MultiScaleTemporalAttModule(input_dim, r1, att_type, 'encoder', 8, [5, 15, 30])
+        self.mstemp_conv = MultiScaleTemporalConv(input_dim, input_dim)        
         self.conv_1x1 = nn.Conv1d(input_dim, num_f_maps, 1) # fc layer
         self.layers = nn.ModuleList(
             [AttModule(2 ** i, num_f_maps, num_f_maps, r1, r2, att_type, 'encoder', alpha) for i in # 2**i
@@ -271,6 +307,10 @@ class Encoder(nn.Module):
             x = x.unsqueeze(2)
             x = self.dropout(x)
             x = x.squeeze(2)
+
+        # Multistage Temporal
+        # x = self.mstemp_att(x, None, mask) # Attention
+        x = self.mstemp_conv(x) # Convolution
 
         feature = self.conv_1x1(x)
         for layer in self.layers:
