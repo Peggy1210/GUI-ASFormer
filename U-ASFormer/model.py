@@ -345,13 +345,16 @@ class UNetStyleOriginalEncoder(nn.Module):
 class DualEncoderASFormer(nn.Module):
     def __init__(self, num_layers, num_f_maps, num_classes):
         super(DualEncoderASFormer, self).__init__()
+        encoder_high = LightweightEncoder(input_dim=HIGH_RESOLUTION_DIM, num_f_maps=num_f_maps)
+        self.encoder_high = encoder_high
+
+        # Use its layer count for low-res encoder
         self.encoder_low = UNetStyleOriginalEncoder(
             num_layers=num_layers,
             input_dim=LOW_RESOLUTION_DIM,
             num_f_maps=num_f_maps,
-            high_encoder_depth=len(self.encoder_high.layers)
+            high_encoder_depth=len(encoder_high.layers)
         )
-        self.encoder_high = LightweightEncoder(input_dim=HIGH_RESOLUTION_DIM, num_f_maps=num_f_maps)
         self.fusion_predictor = FusionPredictor(input_dim=num_f_maps, num_classes=num_classes)
         self.decoder_input_proj = nn.Conv1d(num_classes, num_f_maps, 1)  # Fix here: convert class scores to num_f_maps before decoder
         self.decoders = nn.ModuleList([
@@ -383,13 +386,13 @@ class DualEncoderASFormer(nn.Module):
         outputs = [scores.unsqueeze(0)]
         projected_scores = self.decoder_input_proj(scores)
         # print("projected_scores shape for decoder input:", projected_scores.shape)
+        feature = feat_low
 
         for decoder in self.decoders:
-            scores, _ = decoder(projected_scores * mask[:, 0:1, :], projected_scores, mask)
+            scores, feature = decoder(F.softmax(projected_scores, dim=1) * mask[:, 0:1, :], feature * mask[:, 0:1, :], mask)
             outputs.append(scores.unsqueeze(0))
 
         return torch.cat(outputs, dim=0)
-
 
  
 class Trainer:
