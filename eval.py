@@ -167,7 +167,7 @@ def func_eval(dataset, recog_path, file_list):
         gt_content = read_file(gt_file).split('\n')[0:-1]
  
         recog_file = recog_path + vid.split('.')[0]
-        recog_content = read_file(recog_file).split('\n')[1].split()
+        recog_content = read_file(recog_file).split('\n')[1:] #[1].split()
  
 
         for i in range(len(gt_content)):
