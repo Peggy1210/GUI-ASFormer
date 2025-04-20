@@ -1,3 +1,4 @@
+import einops
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -63,6 +64,8 @@ class AttLayer(nn.Module):
         
         self.att_helper = AttentionHelper()
         self.window_mask = self.construct_window_mask()
+
+        self.softmax = nn.Softmax(dim=-1)
         
     
     def construct_window_mask(self):
@@ -132,43 +135,67 @@ class AttLayer(nn.Module):
         return output * mask[:, 0:1, :]  
     
     def _sliding_window_self_att(self, q,k,v, mask):
-        m_batchsize, c1, L = q.size()
-        _, c2, _ = k.size()
-        _, c3, _ = v.size()
-        
-        
-        assert m_batchsize == 1  # currently, we only accept input with batch size 1
+        QB,QE,QS = q.size()
+        KB,KE,KS = k.size()
+        VB,VE,VS  = v.size()
+
         # padding zeros for the last segment
-        nb = L // self.bl 
-        if L % self.bl != 0:
-            q = torch.cat([q, torch.zeros((m_batchsize, c1, self.bl - L % self.bl)).to(device)], dim=-1)
-            k = torch.cat([k, torch.zeros((m_batchsize, c2, self.bl - L % self.bl)).to(device)], dim=-1)
-            v = torch.cat([v, torch.zeros((m_batchsize, c3, self.bl - L % self.bl)).to(device)], dim=-1)
+        # we want our sequence be dividable by  self.bl, so we need QS % self.bl == 0, if it is not the case we will pad it so it become
+        nb = QS // self.bl
+        if QS % self.bl != 0:
+            q = F.pad(q,pad=(0,self.bl - QS % self.bl),mode='constant',value=0)
+            k = F.pad(k,pad=(0,self.bl - QS % self.bl),mode='constant',value=0)
+            v = F.pad(v,pad=(0,self.bl - QS % self.bl),mode='constant',value=0)
             nb += 1
-        padding_mask = torch.cat([torch.ones((m_batchsize, 1, L)).to(device) * mask[:,0:1,:], torch.zeros((m_batchsize, 1, self.bl * nb - L)).to(device)],dim=-1)
+            
+        padding_mask = torch.cat([torch.ones((QB, 1, QS)).to(q.device) * mask[:,0:1,:], torch.zeros((QB, 1, self.bl * nb - QS)).to(q.device)],dim=-1)
         
-        # sliding window approach, by splitting query_proj and key_proj into shape (c1, l) x (c1, 2l)
+        # sliding window approach, by splitting query_proj and key_proj into shape (QE, l) x (QE, 2l)
         # sliding window for query_proj: reshape
-        q = q.reshape(m_batchsize, c1, nb, self.bl).permute(0, 2, 1, 3).reshape(m_batchsize * nb, c1, self.bl)
-        
+        q = q.reshape(QB, QE, nb, self.bl).permute(0, 2, 1, 3).reshape(QB, nb, QE, self.bl)
+
         # sliding window approach for key_proj
         # 1. add paddings at the start and end
-        k = torch.cat([torch.zeros(m_batchsize, c2, self.bl // 2).to(device), k, torch.zeros(m_batchsize, c2, self.bl // 2).to(device)], dim=-1)
-        v = torch.cat([torch.zeros(m_batchsize, c3, self.bl // 2).to(device), v, torch.zeros(m_batchsize, c3, self.bl // 2).to(device)], dim=-1)
-        padding_mask = torch.cat([torch.zeros(m_batchsize, 1, self.bl // 2).to(device), padding_mask, torch.zeros(m_batchsize, 1, self.bl // 2).to(device)], dim=-1)
+        k = F.pad(k,pad=(self.bl // 2,self.bl // 2),mode='constant',value=0)
+        v = F.pad(v,pad=(self.bl // 2,self.bl // 2),mode='constant',value=0)
+        padding_mask = F.pad(padding_mask,pad=(self.bl // 2,self.bl // 2),mode='constant',value=0)
         
-        # 2. reshape key_proj of shape (m_batchsize*nb, c1, 2*self.bl)
-        k = torch.cat([k[:,:, i*self.bl:(i+1)*self.bl+(self.bl//2)*2] for i in range(nb)], dim=0) # special case when self.bl = 1
-        v = torch.cat([v[:,:, i*self.bl:(i+1)*self.bl+(self.bl//2)*2] for i in range(nb)], dim=0) 
+        # 2. reshape key_proj of shape (QB*nb, QE, 2*self.bl)
+        k = torch.cat([k[:,:, i*self.bl:(i+1)*self.bl+(self.bl//2)*2].unsqueeze(1) for i in range(nb)], dim=1) # special case when self.bl = 1
+        v = torch.cat([v[:,:, i*self.bl:(i+1)*self.bl+(self.bl//2)*2].unsqueeze(1) for i in range(nb)], dim=1) 
+        
         # 3. construct window mask of shape (1, l, 2l), and use it to generate final mask
-        padding_mask = torch.cat([padding_mask[:,:, i*self.bl:(i+1)*self.bl+(self.bl//2)*2] for i in range(nb)], dim=0) # of shape (m*nb, 1, 2l)
-        final_mask = self.window_mask.repeat(m_batchsize * nb, 1, 1) * padding_mask 
+        padding_mask = torch.cat([padding_mask[:,:, i*self.bl:(i+1)*self.bl+(self.bl//2)*2].unsqueeze(1) for i in range(nb)], dim=1)
         
-        output, attention = self.att_helper.scalar_dot_att(q, k, v, final_mask)
-        output = self.conv_out(F.relu(output))
+        # construct window mask of shape (1, l, l + l//2 + l//2), used for sliding window self attention
+        window_mask = torch.zeros((1, self.bl, self.bl + 2* (self.bl //2))).to(q.device)
+        for i in range(self.bl):
+            window_mask[:, :, i:i+self.bl] = 1
 
-        output = output.reshape(m_batchsize, nb, -1, self.bl).permute(0, 2, 1, 3).reshape(m_batchsize, -1, nb * self.bl)
-        output = output[:, :, 0:L]
+        final_mask = window_mask.unsqueeze(1).repeat(QB , nb, 1, 1) * padding_mask 
+        
+        proj_query=q
+        proj_key=k
+        proj_val=v
+        padding_mask = final_mask
+
+        b,m, QE, l1 = proj_query.shape
+        b,m, KE, l2 = proj_key.shape
+        
+        energy = torch.einsum('n b k i, n b k j -> n b i j', proj_query, proj_key)
+        attention = energy / (np.sqrt(QE)*1.0)
+        attention = attention + torch.log(padding_mask + 1e-6) # mask the zero paddings. log(1e-6) for zero paddings
+        attention = self.softmax(attention) 
+        attention = attention * padding_mask
+        output = torch.einsum('n b i k, n b j k-> n b i j', proj_val,attention)
+
+        bb,cc,ww, hh = output.shape
+        output = einops.rearrange(output, 'b c h w -> (b c) h w')
+        output = self.conv_out(F.gelu(output))
+        output = einops.rearrange(output, '(b c) h w->b c h w',b=bb,c=cc)
+
+        output = output.reshape(QB, nb, -1, self.bl).permute(0, 2, 1, 3).reshape(QB, -1, nb * self.bl)
+        output = output[:, :, 0:QS]
         return output * mask[:, 0:1, :]
 
 

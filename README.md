@@ -3,3 +3,9 @@ This repo is an extension for BMVC 2021 paper: [ASFormer: Transformer for Action
 
 ## Enviroment
 Pytorch == 2.5.0, python == 3.11, CUDA=12.6
+
+## Packages
+
+```
+conda install -c conda-forge einops
+```
