@@ -88,6 +88,7 @@ if args.action == "predict":
 
     if args.model_name is None:
         model_name = "epoch-" + str(args.num_epoch) + ".model"
-
+    else:
+        model_name = args.model_name
     trainer.predict(model_dir, results_dir, features_path_low, features_path_high, batch_gen_tst, model_name, actions_dict, args.sample_rate)
 
