@@ -7,6 +7,8 @@ import copy
 import numpy as np
 import math
 
+import matplotlib.pyplot as plt
+
 from eval import segment_bars_with_confidence
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -341,6 +343,9 @@ class Trainer:
         optimizer = optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=1e-5)
         print('LR:{}'.format(learning_rate))
 
+        losses = []
+        accs = []
+
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
         for epoch in range(num_epochs):
             epoch_loss = 0
@@ -371,13 +376,37 @@ class Trainer:
 
             scheduler.step(epoch_loss)
             batch_gen.reset()
-            print("[epoch %d]: epoch loss = %f,   acc = %f" % (epoch + 1, epoch_loss / len(batch_gen.list_of_examples),
-                                                               float(correct) / total))
+            loss = epoch_loss / len(batch_gen.list_of_examples)
+            acc = float(correct) / total
+            print("[epoch %d]: epoch loss = %f,   acc = %f" % (epoch + 1, loss, acc))
+            losses.append(loss)
+            accs.append(acc)
 
             if (epoch + 1) % 10 == 0 and batch_gen_tst is not None:
                 self.test(batch_gen_tst, epoch)
                 torch.save(self.model.state_dict(), save_dir + "/epoch-" + str(epoch + 1) + ".model")
                 torch.save(optimizer.state_dict(), save_dir + "/epoch-" + str(epoch + 1) + ".opt")
+
+                epochs = range(1, len(accs)+1)
+                with open("results.txt", "w") as f_out:
+                    for epoch, loss, acc in zip(epochs, losses, accs):
+                        f_out.write(f"{epoch},{loss:.6f},{acc:.6f}\n")
+
+                # plt.figure(figsize=(10, 5))
+                plt.figure(figsize=(5, 5))
+
+                # plt.subplot(1, 2, 1)
+                plt.plot(epochs, losses, marker='o')
+                plt.xlabel("Epoch")
+                plt.ylabel("Loss")
+
+                # plt.subplot(1, 2, 2)
+                # plt.plot(epochs, accs, marker='o')
+                # plt.xlabel("Epoch")
+                # plt.ylabel("Accuracy")
+
+                plt.tight_layout()
+                plt.savefig("loss_curve.png")
 
     def test(self, batch_gen_tst, epoch):
         self.model.eval()
