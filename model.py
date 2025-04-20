@@ -7,6 +7,8 @@ import copy
 import numpy as np
 import math
 
+import matplotlib.pyplot as plt
+
 from eval import segment_bars_with_confidence
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -286,7 +288,7 @@ class Encoder(nn.Module):
     def __init__(self, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate, att_type, alpha):
         super(Encoder, self).__init__()
         # self.mstemp_att = MultiScaleTemporalAttModule(input_dim, r1, att_type, 'encoder', 8, [5, 15, 30])
-        self.mstemp_conv = MultiScaleTemporalConv(input_dim, input_dim)        
+        # self.mstemp_conv = MultiScaleTemporalConv(input_dim, input_dim)
         self.conv_1x1 = nn.Conv1d(input_dim, num_f_maps, 1) # fc layer
         self.layers = nn.ModuleList(
             [AttModule(2 ** i, num_f_maps, num_f_maps, r1, r2, att_type, 'encoder', alpha) for i in # 2**i
@@ -310,7 +312,7 @@ class Encoder(nn.Module):
 
         # Multistage Temporal
         # x = self.mstemp_att(x, None, mask) # Attention
-        x = self.mstemp_conv(x) # Convolution
+        # x = self.mstemp_conv(x) # Convolution
 
         feature = self.conv_1x1(x)
         for layer in self.layers:
@@ -352,28 +354,33 @@ class FrameDiffLayer(nn.Module):
 
 
 class MyTransformer(nn.Module):
-    def __init__(self, num_decoders, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate):
+    def __init__(self, num_decoders, num_layers, r1, r2, num_f_maps, input_dim_low, input_dim_high, num_classes, channel_masking_rate):
         super(MyTransformer, self).__init__()
         self.frameDiff = FrameDiffLayer()
-        self.encoder = Encoder(num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate, att_type='sliding_att', alpha=1)
+        self.cnn = nn.Sequential(
+            nn.Conv1d(input_dim_high, num_f_maps, kernel_size=1),
+            nn.ReLU(),
+            nn.Conv1d(num_f_maps, num_f_maps, kernel_size=1)
+        )
+        self.encoder = Encoder(num_layers, r1, r2, num_f_maps, input_dim_low, num_classes, channel_masking_rate, att_type='sliding_att', alpha=1)
         self.decoders = nn.ModuleList([copy.deepcopy(Decoder(num_layers, r1, r2, num_f_maps, num_classes, num_classes, att_type='sliding_att', alpha=exponential_descrease(s))) for s in range(num_decoders)]) # num_decoders
-        
-        
-    def forward(self, x, mask):
-        frameDiff = self.frameDiff(x) # This will be forward to the second encoder
-        out, feature = self.encoder(x, mask)
+
+    def forward(self, x_low, x_high, mask):
+        frameDiff = self.frameDiff(x_low) # This will be forward to the second encoder        
+        out, feature = self.encoder(x_low, mask)
         outputs = out.unsqueeze(0)
         
+        feature = self.cnn(x_high)
         for decoder in self.decoders:
-            out, feature = decoder(F.softmax(out, dim=1) * mask[:, 0:1, :], feature* mask[:, 0:1, :], mask)
+            out, feature = decoder(F.softmax(out, dim=1) * mask[:, 0:1, :], feature * mask[:, 0:1, :], mask)
             outputs = torch.cat((outputs, out.unsqueeze(0)), dim=0)
  
         return outputs
 
     
 class Trainer:
-    def __init__(self, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate):
-        self.model = MyTransformer(3, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate)
+    def __init__(self, num_layers, r1, r2, num_f_maps, input_dim_low, input_dim_high, num_classes, channel_masking_rate):
+        self.model = MyTransformer(3, num_layers, r1, r2, num_f_maps, input_dim_low, input_dim_high, num_classes, channel_masking_rate)
         self.ce = nn.CrossEntropyLoss(ignore_index=-100)
 
         print('Model Size: ', sum(p.numel() for p in self.model.parameters()))
@@ -385,8 +392,10 @@ class Trainer:
         self.model.to(device)
         optimizer = optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=1e-5)
         print('LR:{}'.format(learning_rate))
-        
-        
+
+        losses = []
+        accs = []
+
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
         for epoch in range(num_epochs):
             epoch_loss = 0
@@ -394,10 +403,11 @@ class Trainer:
             total = 0
 
             while batch_gen.has_next():
-                batch_input, batch_target, mask, vids = batch_gen.next_batch(batch_size, False)
-                batch_input, batch_target, mask = batch_input.to(device), batch_target.to(device), mask.to(device)
+                batch_input_low, batch_input_high, batch_target, mask, vids = batch_gen.next_batch(batch_size, False)
+                batch_input_low, batch_input_high = batch_input_low.to(device), batch_input_high.to(device)
+                batch_target, mask = batch_target.to(device), mask.to(device)
                 optimizer.zero_grad()
-                ps = self.model(batch_input, mask)
+                ps = self.model(batch_input_low, batch_input_high, mask)
 
                 loss = 0
                 for p in ps:
@@ -413,17 +423,40 @@ class Trainer:
                 _, predicted = torch.max(ps.data[-1], 1)
                 correct += ((predicted == batch_target).float() * mask[:, 0, :].squeeze(1)).sum().item()
                 total += torch.sum(mask[:, 0, :]).item()
-            
-            
+
             scheduler.step(epoch_loss)
             batch_gen.reset()
-            print("[epoch %d]: epoch loss = %f,   acc = %f" % (epoch + 1, epoch_loss / len(batch_gen.list_of_examples),
-                                                               float(correct) / total))
+            loss = epoch_loss / len(batch_gen.list_of_examples)
+            acc = float(correct) / total
+            print("[epoch %d]: epoch loss = %f,   acc = %f" % (epoch + 1, loss, acc))
+            losses.append(loss)
+            accs.append(acc)
 
             if (epoch + 1) % 10 == 0 and batch_gen_tst is not None:
                 self.test(batch_gen_tst, epoch)
                 torch.save(self.model.state_dict(), save_dir + "/epoch-" + str(epoch + 1) + ".model")
                 torch.save(optimizer.state_dict(), save_dir + "/epoch-" + str(epoch + 1) + ".opt")
+
+                epochs = range(1, len(accs)+1)
+                with open(save_dir + "/results.txt", "w") as f_out:
+                    for epoch, loss, acc in zip(epochs, losses, accs):
+                        f_out.write(f"{epoch},{loss:.6f},{acc:.6f}\n")
+
+                # plt.figure(figsize=(10, 5))
+                plt.figure(figsize=(5, 5))
+
+                # plt.subplot(1, 2, 1)
+                plt.plot(epochs, losses, marker='o')
+                plt.xlabel("Epoch")
+                plt.ylabel("Loss")
+
+                # plt.subplot(1, 2, 2)
+                # plt.plot(epochs, accs, marker='o')
+                # plt.xlabel("Epoch")
+                # plt.ylabel("Accuracy")
+
+                plt.tight_layout()
+                plt.savefig(save_dir + "/loss_curve.png")
 
     def test(self, batch_gen_tst, epoch):
         self.model.eval()
@@ -432,45 +465,49 @@ class Trainer:
         if_warp = False  # When testing, always false
         with torch.no_grad():
             while batch_gen_tst.has_next():
-                batch_input, batch_target, mask, vids = batch_gen_tst.next_batch(1, if_warp)
-                batch_input, batch_target, mask = batch_input.to(device), batch_target.to(device), mask.to(device)
-                p = self.model(batch_input, mask)
+                batch_input_low, batch_input_high, batch_target, mask, vids = batch_gen_tst.next_batch(1, if_warp)
+                batch_input_low, batch_input_high = batch_input_low.to(device), batch_input_high.to(device)
+                batch_target, mask =  batch_target.to(device), mask.to(device)
+                p = self.model(batch_input_low, batch_input_high, mask)
                 _, predicted = torch.max(p.data[-1], 1)
                 correct += ((predicted == batch_target).float() * mask[:, 0, :].squeeze(1)).sum().item()
                 total += torch.sum(mask[:, 0, :]).item()
 
         acc = float(correct) / total
         print("---[epoch %d]---: tst acc = %f" % (epoch + 1, acc))
-
         self.model.train()
         batch_gen_tst.reset()
 
-    def predict(self, model_dir, results_dir, features_path, batch_gen_tst, epoch, actions_dict, sample_rate):
+    def predict(self, model_dir, results_dir, features_path_low, features_path_high, batch_gen_tst, model_name, actions_dict, sample_rate):
         self.model.eval()
         with torch.no_grad():
             self.model.to(device)
-            self.model.load_state_dict(torch.load(model_dir + "/epoch-" + str(epoch) + ".model"))
+            self.model.load_state_dict(torch.load(model_dir + "/" + model_name))
 
             batch_gen_tst.reset()
             import time
             
             time_start = time.time()
             while batch_gen_tst.has_next():
-                batch_input, batch_target, mask, vids = batch_gen_tst.next_batch(1)
+                batch_input_low, batch_input_high, batch_target, mask, vids = batch_gen_tst.next_batch(1)
                 vid = vids[0]
-#                 print(vid)
-                features = np.load(features_path + vid.split('.')[0] + '.npy')
-                features = features[:, ::sample_rate]
+                features_low = np.load(features_path_low + vid.split('.')[0] + '.npy')
+                features_high = np.load(features_path_high + vid.split('.')[0] + '.npy')
+                features_low = features_low[:, ::sample_rate]
+                features_high = features_high[:, ::sample_rate]
 
-                input_x = torch.tensor(features, dtype=torch.float)
-                input_x.unsqueeze_(0)
-                input_x = input_x.to(device)
-                predictions = self.model(input_x, torch.ones(input_x.size(), device=device))
+                input_x_low, input_x_high = torch.tensor(features_low, dtype=torch.float), torch.tensor(features_high, dtype=torch.float)
+                input_x_low.unsqueeze_(0)
+                input_x_high.unsqueeze_(0)
+                input_x_low, input_x_high = input_x_low.to(device), input_x_high.to(device)
+                # batch_input_low, batch_input_high = batch_input_low.to(device), batch_input_high.to(device)
+                # batch_target, mask = batch_target.to(device), mask.to(device)
+                ### Pay attention to the 
+                predictions = self.model(input_x_low, input_x_high, torch.ones(input_x_low.size(), device=device))
 
                 for i in range(len(predictions)):
                     confidence, predicted = torch.max(F.softmax(predictions[i], dim=1).data, 1)
                     confidence, predicted = confidence.squeeze(), predicted.squeeze()
- 
                     batch_target = batch_target.squeeze()
                     confidence, predicted = confidence.squeeze(), predicted.squeeze()
  
@@ -484,10 +521,9 @@ class Trainer:
                                                                     list(actions_dict.values()).index(
                                                                         predicted[i].item())]] * sample_rate))
                 f_name = vid.split('/')[-1].split('.')[0]
-                f_ptr = open(results_dir + "/" + f_name, "w")
-                f_ptr.write("### Frame level recognition: ###\n")
-                f_ptr.write('\n'.join(recognition))
-                f_ptr.close()
+                with open(results_dir + "/" + f_name, "w") as f_ptr:
+                    f_ptr.write("### Frame level recognition: ###\n")
+                    f_ptr.write('\n'.join(recognition))
             time_end = time.time()
             
             
