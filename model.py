@@ -306,14 +306,14 @@ class Decoder(nn.Module):
         return out, feature
     
 class MyTransformer(nn.Module):
-    def __init__(self, num_decoders, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate):
+    def __init__(self, num_decoders, num_layers, r1, r2, num_f_maps, input_dim_low, input_dim_high, num_classes, channel_masking_rate):
         super(MyTransformer, self).__init__()
         self.cnn = nn.Sequential(
-            nn.Conv1d(input_dim, num_f_maps, kernel_size=1),
+            nn.Conv1d(input_dim_high, num_f_maps, kernel_size=1),
             nn.ReLU(),
             nn.Conv1d(num_f_maps, num_f_maps, kernel_size=1)
         )
-        self.encoder = Encoder(num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate, att_type='sliding_att', alpha=1)
+        self.encoder = Encoder(num_layers, r1, r2, num_f_maps, input_dim_low, num_classes, channel_masking_rate, att_type='sliding_att', alpha=1)
         self.decoders = nn.ModuleList([copy.deepcopy(Decoder(num_layers, r1, r2, num_f_maps, num_classes, num_classes, att_type='sliding_att', alpha=exponential_descrease(s))) for s in range(num_decoders)]) # num_decoders
         
     def forward(self, x_low, x_high, mask):        
@@ -329,8 +329,8 @@ class MyTransformer(nn.Module):
 
     
 class Trainer:
-    def __init__(self, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate):
-        self.model = MyTransformer(2, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate)
+    def __init__(self, num_layers, r1, r2, num_f_maps, input_dim_low, input_dim_high, num_classes, channel_masking_rate):
+        self.model = MyTransformer(2, num_layers, r1, r2, num_f_maps, input_dim_low, input_dim_high, num_classes, channel_masking_rate)
         self.ce = nn.CrossEntropyLoss(ignore_index=-100)
 
         print('Model Size: ', sum(p.numel() for p in self.model.parameters()))
@@ -388,7 +388,7 @@ class Trainer:
                 torch.save(optimizer.state_dict(), save_dir + "/epoch-" + str(epoch + 1) + ".opt")
 
                 epochs = range(1, len(accs)+1)
-                with open("results.txt", "w") as f_out:
+                with open(save_dir + "/results.txt", "w") as f_out:
                     for epoch, loss, acc in zip(epochs, losses, accs):
                         f_out.write(f"{epoch},{loss:.6f},{acc:.6f}\n")
 
@@ -406,7 +406,7 @@ class Trainer:
                 # plt.ylabel("Accuracy")
 
                 plt.tight_layout()
-                plt.savefig("loss_curve.png")
+                plt.savefig(save_dir + "/loss_curve.png")
 
     def test(self, batch_gen_tst, epoch):
         self.model.eval()
@@ -428,11 +428,11 @@ class Trainer:
         self.model.train()
         batch_gen_tst.reset()
 
-    def predict(self, model_dir, results_dir, features_path_low, features_path_high, batch_gen_tst, epoch, actions_dict, sample_rate):
+    def predict(self, model_dir, results_dir, features_path_low, features_path_high, batch_gen_tst, model_name, actions_dict, sample_rate):
         self.model.eval()
         with torch.no_grad():
             self.model.to(device)
-            self.model.load_state_dict(torch.load(model_dir + "/epoch-" + str(epoch) + ".model"))
+            self.model.load_state_dict(torch.load(model_dir + "/" + model_name))
 
             batch_gen_tst.reset()
             import time
@@ -473,7 +473,7 @@ class Trainer:
                 f_name = vid.split('/')[-1].split('.')[0]
                 with open(results_dir + "/" + f_name, "w") as f_ptr:
                     f_ptr.write("### Frame level recognition: ###\n")
-                    f_ptr.write(' '.join(recognition))
+                    f_ptr.write('\n'.join(recognition))
             time_end = time.time()
             
             

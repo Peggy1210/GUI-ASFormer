@@ -16,40 +16,42 @@ random.seed(seed)
 torch.manual_seed(seed)
 torch.cuda.manual_seed_all(seed)
 torch.backends.cudnn.deterministic = True
- 
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--action', default='train')
-parser.add_argument('--dataset', default="50salads")
+parser.add_argument('--data_dir', default="./data")
+parser.add_argument('--dataset', default="website")
 parser.add_argument('--split', default='1')
 parser.add_argument('--model_dir', default='models')
 parser.add_argument('--result_dir', default='results')
 
+# For prediction model
+parser.add_argument('--model_name', type=str, default=None)
+
+# Embedding info
+parser.add_argument('--features_low', type=str, default="swin")
+parser.add_argument('--features_high', type=str, default="eva")
+parser.add_argument('--input_dim_low', type=int, default=2048)
+parser.add_argument('--input_dim_high', type=int, default=2048)
+
+# Model Configuration
+parser.add_argument('--num_epochs', type=int, default=120)
+parser.add_argument('--lr', type=float, default=0.0005)
+parser.add_argument('--batch_size', type=int, default=10)
+parser.add_argument('--sample_rate', type=int, default=1)
+parser.add_argument('--num_layers', type=int, default=10)
+parser.add_argument('--num_f_maps', type=int, default=64)
+parser.add_argument('--channel_mask_rate', type=float, default=0.1)
+
 args = parser.parse_args()
+
+vid_list_file = f"{args.data_dir}/{args.dataset}/splits/train.split{args.split}.bundle"
+vid_list_file_tst = f"{args.data_dir}/{args.dataset}/splits/test.split{args.split}.bundle"
+features_path_low = f"{args.data_dir}/{args.dataset}/features_{args.features_low}/"
+features_path_high = f"{args.data_dir}/{args.dataset}/features_{args.features_high}/"
+gt_path = f"{args.data_dir}/{args.dataset}/groundTruth/"
  
-num_epochs = 120
-
-lr = 0.0005
-num_layers = 10
-num_f_maps = 64
-features_dim = 2048
-bz = 1
-
-channel_mask_rate = 0.3
-
-# use the full temporal resolution @ 30fps
-sample_rate = 1
-
-if args.dataset == 'website':
-    channel_mask_rate = 0.1
-
-vid_list_file = "./data/"+args.dataset+"/splits/train.split"+args.split+".bundle"
-vid_list_file_tst = "./data/"+args.dataset+"/splits/test.split"+args.split+".bundle"
-# features_path = "./data/"+args.dataset+"/features/"
-features_path_low = "./data/"+args.dataset+"/features_swin/"
-features_path_high = "./data/"+args.dataset+"/features_eva/"
-gt_path = "./data/"+args.dataset+"/groundTruth/"
- 
-mapping_file = "./data/"+args.dataset+"/mapping.txt"
+mapping_file = f"{args.data_dir}/{args.dataset}/mapping.txt"
  
 model_dir = "./{}/".format(args.model_dir)+args.dataset+"/split_"+args.split
 
@@ -70,18 +72,22 @@ for a in actions:
 num_classes = len(actions_dict)
 
 
-trainer = Trainer(num_layers, 2, 2, num_f_maps, features_dim, num_classes, channel_mask_rate)
+trainer = Trainer(args.num_layers, 2, 2, args.num_f_maps, args.input_dim_low, num_classes, args.channel_mask_rate)
 if args.action == "train":
-    batch_gen = BatchGenerator(num_classes, actions_dict, gt_path, features_path_low, features_path_high, sample_rate)
+    batch_gen = BatchGenerator(num_classes, actions_dict, gt_path, features_path_low, features_path_high, args.sample_rate)
     batch_gen.read_data(vid_list_file)
 
-    batch_gen_tst = BatchGenerator(num_classes, actions_dict, gt_path, features_path_low, features_path_high, sample_rate)
+    batch_gen_tst = BatchGenerator(num_classes, actions_dict, gt_path, features_path_low, features_path_high, args.sample_rate)
     batch_gen_tst.read_data(vid_list_file_tst)
 
-    trainer.train(model_dir, batch_gen, num_epochs, bz, lr, batch_gen_tst)
+    trainer.train(model_dir, batch_gen, args.num_epochs, args.batch_size, args.lr, batch_gen_tst)
 
 if args.action == "predict":
-    batch_gen_tst = BatchGenerator(num_classes, actions_dict, gt_path, features_path_low, features_path_high, sample_rate)
+    batch_gen_tst = BatchGenerator(num_classes, actions_dict, gt_path, features_path_low, features_path_high, args.sample_rate)
     batch_gen_tst.read_data(vid_list_file_tst)
-    trainer.predict(model_dir, results_dir, features_path_low, features_path_high, batch_gen_tst, num_epochs, actions_dict, sample_rate)
+
+    if args.model_name is None:
+        model_name = "epoch-" + str(args.num_epoch) + ".model"
+
+    trainer.predict(model_dir, results_dir, features_path_low, features_path_high, batch_gen_tst, model_name, actions_dict, args.sample_rate)
 
