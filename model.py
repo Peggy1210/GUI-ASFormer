@@ -288,7 +288,7 @@ class Encoder(nn.Module):
     def __init__(self, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate, att_type, alpha):
         super(Encoder, self).__init__()
         # self.mstemp_att = MultiScaleTemporalAttModule(input_dim, r1, att_type, 'encoder', 8, [5, 15, 30])
-        # self.mstemp_conv = MultiScaleTemporalConv(input_dim, input_dim)
+        self.mstemp_conv = MultiScaleTemporalConv(input_dim, input_dim)
         self.conv_1x1 = nn.Conv1d(input_dim, num_f_maps, 1) # fc layer
         self.layers = nn.ModuleList(
             [AttModule(2 ** i, num_f_maps, num_f_maps, r1, r2, att_type, 'encoder', alpha) for i in # 2**i
@@ -312,7 +312,7 @@ class Encoder(nn.Module):
 
         # Multistage Temporal
         # x = self.mstemp_att(x, None, mask) # Attention
-        # x = self.mstemp_conv(x) # Convolution
+        x = self.mstemp_conv(x) # Convolution
 
         feature = self.conv_1x1(x)
         for layer in self.layers:
