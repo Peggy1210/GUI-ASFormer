@@ -366,8 +366,8 @@ class MyTransformer(nn.Module):
         self.decoders = nn.ModuleList([copy.deepcopy(Decoder(num_layers, r1, r2, num_f_maps, num_classes, num_classes, att_type='sliding_att', alpha=exponential_descrease(s))) for s in range(num_decoders)]) # num_decoders
 
     def forward(self, x_low, x_high, mask):
-        frameDiff = self.frameDiff(x_low) # This will be forward to the second encoder        
-        out, feature = self.encoder(x_low, mask)
+        frameDiff = self.frameDiff(x_low) # This will be forward to the encoder  
+        out, feature = self.encoder(frameDiff, mask)
         outputs = out.unsqueeze(0)
         
         feature = self.cnn(x_high)
