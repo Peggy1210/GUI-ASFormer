@@ -25,8 +25,9 @@ parser.add_argument('--split', default='1')
 parser.add_argument('--model_dir', default='models')
 parser.add_argument('--result_dir', default='results')
 
-# For prediction model
+# For pretrained model
 parser.add_argument('--model_name', type=str, default=None)
+parser.add_argument('--opt_name', type=str, default=None)
 
 # Embedding info
 parser.add_argument('--features_low', type=str, default="swin")
@@ -42,6 +43,7 @@ parser.add_argument('--sample_rate', type=int, default=1)
 parser.add_argument('--num_layers', type=int, default=10)
 parser.add_argument('--num_f_maps', type=int, default=64)
 parser.add_argument('--channel_mask_rate', type=float, default=0.3)
+parser.add_argument('--test_every', type=int, default=10)
 
 args = parser.parse_args()
 
@@ -72,7 +74,8 @@ for a in actions:
 num_classes = len(actions_dict)
 
 
-trainer = Trainer(args.num_layers, 2, 2, args.num_f_maps, args.input_dim_low, args.input_dim_high, num_classes, args.channel_mask_rate)
+trainer = Trainer(args.num_layers, 2, 2, args.num_f_maps, args.input_dim_low, args.input_dim_high, num_classes, args.channel_mask_rate,
+                  model_dir, args.model_name, args.test_every)
 if args.action == "train":
     batch_gen = BatchGenerator(num_classes, actions_dict, gt_path, features_path_low, features_path_high, args.sample_rate)
     batch_gen.read_data(vid_list_file)
@@ -80,16 +83,10 @@ if args.action == "train":
     batch_gen_tst = BatchGenerator(num_classes, actions_dict, gt_path, features_path_low, features_path_high, args.sample_rate)
     batch_gen_tst.read_data(vid_list_file_tst)
 
-    trainer.train(model_dir, batch_gen, args.num_epochs, args.batch_size, args.lr, batch_gen_tst)
+    trainer.train(batch_gen, args.num_epochs, args.batch_size, args.lr, batch_gen_tst)
 
 if args.action == "predict":
     batch_gen_tst = BatchGenerator(num_classes, actions_dict, gt_path, features_path_low, features_path_high, args.sample_rate)
     batch_gen_tst.read_data(vid_list_file_tst)
-
-    if args.model_name is None:
-        model_name = "epoch-" + str(args.num_epochs) + ".model"
-    else:
-        model_name = args.model_name
-
-    trainer.predict(model_dir, results_dir, features_path_low, features_path_high, batch_gen_tst, model_name, actions_dict, args.sample_rate)
+    trainer.predict(results_dir, features_path_low, features_path_high, batch_gen_tst, actions_dict, args.sample_rate)
 

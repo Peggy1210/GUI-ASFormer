@@ -6,6 +6,7 @@ from torch import optim
 import copy
 import numpy as np
 import math
+import os
 
 import matplotlib.pyplot as plt
 
@@ -379,25 +380,43 @@ class MyTransformer(nn.Module):
 
     
 class Trainer:
-    def __init__(self, num_layers, r1, r2, num_f_maps, input_dim_low, input_dim_high, num_classes, channel_masking_rate):
+    def __init__(self, num_layers, r1, r2, num_f_maps, input_dim_low, input_dim_high, num_classes, channel_masking_rate, pretrained_dir=None, pretrained_name=None, test_every=10):
         self.model = MyTransformer(3, num_layers, r1, r2, num_f_maps, input_dim_low, input_dim_high, num_classes, channel_masking_rate)
         self.ce = nn.CrossEntropyLoss(ignore_index=-100)
+
+        self.pretrained_dir = pretrained_dir
+        self.pretrained_name = pretrained_name
+        self.test_every = test_every
 
         print('Model Size: ', sum(p.numel() for p in self.model.parameters()))
         self.mse = nn.MSELoss(reduction='none')
         self.num_classes = num_classes
 
-    def train(self, save_dir, batch_gen, num_epochs, batch_size, learning_rate, batch_gen_tst=None):
-        self.model.train()
+    def train(self, batch_gen, num_epochs, batch_size, learning_rate, batch_gen_tst=None):
         self.model.to(device)
         optimizer = optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=1e-5)
-        print('LR:{}'.format(learning_rate))
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
 
         losses = []
         accs = []
+        start_epoch = 0
 
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
-        for epoch in range(num_epochs):
+        # Load pretrained model
+        if self.pretrained_name is not None:
+            print("Load pretrained model from", self.pretrained_name)
+            checkpoint = torch.load(self.pretrained_dir + "/" + self.pretrained_name)
+            self.model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+
+            history = checkpoint['history']
+            start_epoch = history['epoch']
+            losses = history['loss']
+            accs = history['acc']
+            print('Resume training from epoch', start_epoch + 1)
+
+        self.model.train()
+        for epoch in range(start_epoch, num_epochs):
             epoch_loss = 0
             correct = 0
             total = 0
@@ -432,31 +451,34 @@ class Trainer:
             losses.append(loss)
             accs.append(acc)
 
-            if (epoch + 1) % 10 == 0 and batch_gen_tst is not None:
+            if (epoch + 1) % self.test_every == 0 and batch_gen_tst is not None:
                 self.test(batch_gen_tst, epoch)
-                torch.save(self.model.state_dict(), save_dir + "/epoch-" + str(epoch + 1) + ".model")
-                torch.save(optimizer.state_dict(), save_dir + "/epoch-" + str(epoch + 1) + ".opt")
-
-                epochs = range(1, len(accs)+1)
-                with open(save_dir + "/results.txt", "w") as f_out:
-                    for epoch, loss, acc in zip(epochs, losses, accs):
-                        f_out.write(f"{epoch},{loss:.6f},{acc:.6f}\n")
+                torch.save({
+                    'model_state_dict': self.model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'scheduler_state_dict': scheduler.state_dict(),
+                    'history': {
+                        'epoch': epoch + 1,
+                        'loss': losses,
+                        'acc': accs
+                    }
+                }, self.pretrained_dir + "/epoch-" + str(epoch + 1) + ".pkl")
 
                 # plt.figure(figsize=(10, 5))
                 plt.figure(figsize=(5, 5))
 
                 # plt.subplot(1, 2, 1)
-                plt.plot(epochs, losses, marker='o')
+                plt.plot(losses, marker='o')
                 plt.xlabel("Epoch")
                 plt.ylabel("Loss")
 
                 # plt.subplot(1, 2, 2)
-                # plt.plot(epochs, accs, marker='o')
+                # plt.plot(accs, marker='o')
                 # plt.xlabel("Epoch")
                 # plt.ylabel("Accuracy")
 
                 plt.tight_layout()
-                plt.savefig(save_dir + "/loss_curve.png")
+                plt.savefig(self.pretrained_dir + "/loss_curve.png")
 
     def test(self, batch_gen_tst, epoch):
         self.model.eval()
@@ -478,11 +500,11 @@ class Trainer:
         self.model.train()
         batch_gen_tst.reset()
 
-    def predict(self, model_dir, results_dir, features_path_low, features_path_high, batch_gen_tst, model_name, actions_dict, sample_rate):
+    def predict(self, results_dir, features_path_low, features_path_high, batch_gen_tst, actions_dict, sample_rate):
         self.model.eval()
         with torch.no_grad():
             self.model.to(device)
-            self.model.load_state_dict(torch.load(model_dir + "/" + model_name))
+            self.model.load_state_dict(torch.load(self.pretrained_dir + "/" + self.pretrained_name)['model_state_dict'])
 
             batch_gen_tst.reset()
             import time
