@@ -380,12 +380,14 @@ class MyTransformer(nn.Module):
 
     
 class Trainer:
-    def __init__(self, num_layers, r1, r2, num_f_maps, input_dim_low, input_dim_high, num_classes, channel_masking_rate, pretrained_dir=None, pretrained_name=None, test_every=10):
-        self.model = MyTransformer(3, num_layers, r1, r2, num_f_maps, input_dim_low, input_dim_high, num_classes, channel_masking_rate)
+    def __init__(self, num_decoders, num_layers, r1, r2, num_f_maps, input_dim_low, input_dim_high, num_classes, channel_masking_rate,
+                 pretrained_dir=None, pretrained_name=None, mode='best', test_every=10):
+        self.model = MyTransformer(num_decoders, num_layers, r1, r2, num_f_maps, input_dim_low, input_dim_high, num_classes, channel_masking_rate)
         self.ce = nn.CrossEntropyLoss(ignore_index=-100)
 
         self.pretrained_dir = pretrained_dir
         self.pretrained_name = pretrained_name
+        self.mode = mode
         self.test_every = test_every
 
         print('Model Size: ', sum(p.numel() for p in self.model.parameters()))
@@ -393,6 +395,7 @@ class Trainer:
         self.num_classes = num_classes
 
     def train(self, batch_gen, num_epochs, batch_size, learning_rate, batch_gen_tst=None):
+        print("Trained on", device)
         self.model.to(device)
         optimizer = optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=1e-5)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
@@ -400,20 +403,34 @@ class Trainer:
         losses = []
         accs = []
         start_epoch = 0
+        best_acc = -1
+        best_epoch = -1
+        best_model = None
 
         # Load pretrained model
         if self.pretrained_name is not None:
             print("Load pretrained model from", self.pretrained_name)
-            checkpoint = torch.load(self.pretrained_dir + "/" + self.pretrained_name)
-            self.model.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-
+            checkpoint = torch.load(self.pretrained_dir + "/" + self.pretrained_name, map_location=device)
             history = checkpoint['history']
-            start_epoch = history['epoch']
-            losses = history['loss']
-            accs = history['acc']
-            print('Resume training from epoch', start_epoch + 1)
+            
+            if self.mode == 'last':
+                start_epoch = history['epoch']
+                losses = history['loss']
+                accs = history['acc']
+                best_acc = history['best_acc']
+                best_epoch = history['best_epoch']
+                best_model = history['best_model']
+                self.model.load_state_dict(checkpoint['model_state_dict'])
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                print('Resume training from epoch', start_epoch + 1)
+                print('Current best accuracy:', best_acc)
+            elif self.mode == 'best':
+                self.model.load_state_dict(history['best_model'])
+                print('Trained with the best model')
+                print('Previous best accuracy:', history['best_acc'])
+        else:
+            print("Training from scratch")
 
         self.model.train()
         for epoch in range(start_epoch, num_epochs):
@@ -452,7 +469,13 @@ class Trainer:
             accs.append(acc)
 
             if (epoch + 1) % self.test_every == 0 and batch_gen_tst is not None:
-                self.test(batch_gen_tst, epoch)
+                test_acc = self.test(batch_gen_tst, epoch)
+                if test_acc >= best_acc:
+                    best_acc = test_acc
+                    best_epoch = epoch + 1
+                    best_model = self.model.state_dict()
+                print("---[epoch %d]---: tst acc = %f, best acc = %f" % (epoch + 1, test_acc, best_acc))
+
                 torch.save({
                     'model_state_dict': self.model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
@@ -460,7 +483,10 @@ class Trainer:
                     'history': {
                         'epoch': epoch + 1,
                         'loss': losses,
-                        'acc': accs
+                        'acc': accs,
+                        'best_acc': best_acc,
+                        'best_epoch': best_epoch,
+                        'best_model': best_model
                     }
                 }, self.pretrained_dir + "/epoch-" + str(epoch + 1) + ".pkl")
 
@@ -496,15 +522,23 @@ class Trainer:
                 total += torch.sum(mask[:, 0, :]).item()
 
         acc = float(correct) / total
-        print("---[epoch %d]---: tst acc = %f" % (epoch + 1, acc))
         self.model.train()
         batch_gen_tst.reset()
+        return acc
 
     def predict(self, results_dir, features_path_low, features_path_high, batch_gen_tst, actions_dict, sample_rate):
+        print("Predict on", device)
         self.model.eval()
         with torch.no_grad():
             self.model.to(device)
-            self.model.load_state_dict(torch.load(self.pretrained_dir + "/" + self.pretrained_name)['model_state_dict'])
+            if self.mode == 'last':
+                checkpoint = torch.load(self.pretrained_dir + "/" + self.pretrained_name, map_location=device)
+                print(f"Loading last model (epoch {checkpoint['history']['epoch']})")
+                self.model.load_state_dict(checkpoint['model_state_dict'])
+            elif self.mode == 'best':
+                checkpoint = torch.load(self.pretrained_dir + "/" + self.pretrained_name, map_location=device)
+                print(f"Loading best model (epoch {checkpoint['history']['best_epoch']})")
+                self.model.load_state_dict(checkpoint['history']['best_model'])
 
             batch_gen_tst.reset()
             import time
@@ -527,25 +561,25 @@ class Trainer:
                 ### Pay attention to the 
                 predictions = self.model(input_x_low, input_x_high, torch.ones(input_x_low.size(), device=device))
 
-                for i in range(len(predictions)):
-                    confidence, predicted = torch.max(F.softmax(predictions[i], dim=1).data, 1)
+                for stg in range(len(predictions)):
+                    confidence, predicted = torch.max(F.softmax(predictions[stg], dim=1).data, 1)
                     confidence, predicted = confidence.squeeze(), predicted.squeeze()
                     batch_target = batch_target.squeeze()
                     confidence, predicted = confidence.squeeze(), predicted.squeeze()
  
-                    segment_bars_with_confidence(results_dir + '/{}_stage{}.png'.format(vid, i),
+                    segment_bars_with_confidence(results_dir + '/{}_stage{}.png'.format(vid, stg),
                                                  confidence.tolist(),
                                                  batch_target.tolist(), predicted.tolist())
 
-                recognition = []
-                for i in range(len(predicted)):
-                    recognition = np.concatenate((recognition, [list(actions_dict.keys())[
-                                                                    list(actions_dict.values()).index(
-                                                                        predicted[i].item())]] * sample_rate))
-                f_name = vid.split('/')[-1].split('.')[0]
-                with open(results_dir + "/" + f_name, "w") as f_ptr:
-                    f_ptr.write("### Frame level recognition: ###\n")
-                    f_ptr.write('\n'.join(recognition))
+                    recognition = []
+                    for i in range(len(predicted)):
+                        recognition = np.concatenate((recognition, [list(actions_dict.keys())[
+                                                                        list(actions_dict.values()).index(
+                                                                            predicted[i].item())]] * sample_rate))
+                    f_name = vid.split('/')[-1].split('.')[0]
+                    with open(results_dir + "/" + f_name + "_stage" + str(stg), "w") as f_ptr:
+                        f_ptr.write("### Frame level recognition: ###\n")
+                        f_ptr.write('\n'.join(recognition))
             time_end = time.time()
             
             

@@ -28,6 +28,7 @@ parser.add_argument('--result_dir', default='results')
 # For pretrained model
 parser.add_argument('--model_name', type=str, default=None)
 parser.add_argument('--opt_name', type=str, default=None)
+parser.add_argument('--mode', type=str, default='best', choices=['best', 'last'])
 
 # Embedding info
 parser.add_argument('--features_low', type=str, default="swin")
@@ -40,6 +41,7 @@ parser.add_argument('--num_epochs', type=int, default=120)
 parser.add_argument('--lr', type=float, default=0.0005)
 parser.add_argument('--batch_size', type=int, default=1)
 parser.add_argument('--sample_rate', type=int, default=1)
+parser.add_argument('--num_decoders', type=int, default=3)
 parser.add_argument('--num_layers', type=int, default=10)
 parser.add_argument('--num_f_maps', type=int, default=64)
 parser.add_argument('--channel_mask_rate', type=float, default=0.3)
@@ -74,8 +76,8 @@ for a in actions:
 num_classes = len(actions_dict)
 
 
-trainer = Trainer(args.num_layers, 2, 2, args.num_f_maps, args.input_dim_low, args.input_dim_high, num_classes, args.channel_mask_rate,
-                  model_dir, args.model_name, args.test_every)
+trainer = Trainer(args.num_decoders, args.num_layers, 2, 2, args.num_f_maps, args.input_dim_low, args.input_dim_high, num_classes, args.channel_mask_rate,
+                  model_dir, args.model_name, args.mode, args.test_every)
 if args.action == "train":
     batch_gen = BatchGenerator(num_classes, actions_dict, gt_path, features_path_low, features_path_high, args.sample_rate)
     batch_gen.read_data(vid_list_file)

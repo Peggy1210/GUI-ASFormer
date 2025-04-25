@@ -140,7 +140,7 @@ def segment_bars_with_confidence(save_path, confidence, *labels):
     plt.close()
  
  
-def func_eval(dataset, recog_path, file_list):
+def func_eval(dataset, recog_path, file_list, stage):
     ground_truth_path = "./data/" + dataset + "/groundTruth/"
     mapping_file = "./data/" + dataset + "/mapping.txt"
     list_of_videos = read_file(file_list).split('\n')[:-1]
@@ -166,7 +166,7 @@ def func_eval(dataset, recog_path, file_list):
         gt_file = ground_truth_path + vid
         gt_content = read_file(gt_file).split('\n')[0:-1]
  
-        recog_file = recog_path + vid.split('.')[0]
+        recog_file = recog_path + vid.split('.')[0] + '_stage' + str(stage)
         recog_content = read_file(recog_file).split('\n')[1:] #[1].split()
  
 
@@ -203,9 +203,6 @@ def func_eval(dataset, recog_path, file_list):
 
 def main():
     cnt_split_dict = {
-        '50salads':5,
-        'gtea':4,
-        'breakfast':4,
         'website':2
     }
     
@@ -214,6 +211,7 @@ def main():
     parser.add_argument('--dataset', default="gtea")
     parser.add_argument('--split', default=1, type=int)
     parser.add_argument('--result_dir', default='results')
+    parser.add_argument('--stage', default=2)
     
     args = parser.parse_args()
 
@@ -225,7 +223,7 @@ def main():
         for split in range(1, cnt_split_dict[args.dataset] + 1):
             recog_path = "./{}/".format(args.result_dir)+args.dataset+"/split_{}".format(split)+"/"
             file_list = "./data/"+args.dataset+"/splits/test.split{}".format(split)+".bundle"
-            acc, edit, f1s = func_eval(args.dataset, recog_path, file_list)
+            acc, edit, f1s = func_eval(args.dataset, recog_path, file_list, args.stage)
             acc_all += acc
             edit_all += edit
             f1s_all[0] += f1s[0]
@@ -239,7 +237,7 @@ def main():
         split = args.split
         recog_path = "./{}/".format(args.result_dir)+args.dataset+"/split_{}".format(split)+"/"
         file_list = "./data/"+args.dataset+"/splits/test.split{}".format(split)+".bundle"
-        acc_all, edit_all, f1s_all = func_eval(args.dataset, recog_path, file_list)
+        acc_all, edit_all, f1s_all = func_eval(args.dataset, recog_path, file_list, args.stage)
     
     print("Acc: %.4f  Edit: %4f  F1@10,25,50 " % (acc_all, edit_all), f1s_all)
 
