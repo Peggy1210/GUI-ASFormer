@@ -211,7 +211,7 @@ def main():
     parser.add_argument('--dataset', default="gtea")
     parser.add_argument('--split', default=1, type=int)
     parser.add_argument('--result_dir', default='results')
-    parser.add_argument('--stage', default=2)
+    parser.add_argument('--stage', default=3)
     
     args = parser.parse_args()
 
