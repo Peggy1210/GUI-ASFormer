@@ -394,7 +394,7 @@ class Trainer:
         self.mse = nn.MSELoss(reduction='none')
         self.num_classes = num_classes
 
-    def train(self, batch_gen, num_epochs, batch_size, learning_rate, batch_gen_tst=None):
+    def train(self, batch_gen, num_epochs, batch_size, learning_rate, batch_gen_tst=None, lmbda=0.15):
         print("Trained on", device)
         self.model.to(device)
         optimizer = optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=1e-5)
@@ -448,7 +448,7 @@ class Trainer:
                 loss = 0
                 for p in ps:
                     loss += self.ce(p.transpose(2, 1).contiguous().view(-1, self.num_classes), batch_target.view(-1))
-                    loss += 0.15 * torch.mean(torch.clamp(
+                    loss += lmbda * torch.mean(torch.clamp(
                         self.mse(F.log_softmax(p[:, :, 1:], dim=1), F.log_softmax(p.detach()[:, :, :-1], dim=1)), min=0,
                         max=16) * mask[:, :, 1:])
 
@@ -561,13 +561,14 @@ class Trainer:
                 ### Pay attention to the 
                 predictions = self.model(input_x_low, input_x_high, torch.ones(input_x_low.size(), device=device))
 
+                f_name = vid.split('/')[-1].split('.')[0]
                 for stg in range(len(predictions)):
                     confidence, predicted = torch.max(F.softmax(predictions[stg], dim=1).data, 1)
                     confidence, predicted = confidence.squeeze(), predicted.squeeze()
                     batch_target = batch_target.squeeze()
                     confidence, predicted = confidence.squeeze(), predicted.squeeze()
  
-                    segment_bars_with_confidence(results_dir + '/{}_stage{}.png'.format(vid, stg),
+                    segment_bars_with_confidence(results_dir + '/{}_stage{}.png'.format(f_name, stg),
                                                  confidence.tolist(),
                                                  batch_target.tolist(), predicted.tolist())
 
@@ -576,7 +577,7 @@ class Trainer:
                         recognition = np.concatenate((recognition, [list(actions_dict.keys())[
                                                                         list(actions_dict.values()).index(
                                                                             predicted[i].item())]] * sample_rate))
-                    f_name = vid.split('/')[-1].split('.')[0]
+
                     with open(results_dir + "/" + f_name + "_stage" + str(stg), "w") as f_ptr:
                         f_ptr.write("### Frame level recognition: ###\n")
                         f_ptr.write('\n'.join(recognition))
