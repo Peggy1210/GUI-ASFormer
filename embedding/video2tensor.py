@@ -12,6 +12,9 @@ import torch.nn as nn
 from pytorch_i3d import InceptionI3d
 import json
 import random
+import sys
+from pathlib import Path
+from PIL import Image 
 
 def set_seed(seed=42):
     torch.manual_seed(seed)
@@ -60,7 +63,7 @@ class I3D:
             features = self.i3d(framesmats.permute(1, 0, 2, 3).unsqueeze(0).to(self.device))  # Extract deep features 
             features = features.squeeze(0).squeeze(2).squeeze(2) # (2048, T/8)
 
-        if self.device == "gpu": torch.cuda.empty_cache()
+        if self.device == "cuda": torch.cuda.empty_cache()
         return features.cpu()
     
 
@@ -107,21 +110,19 @@ class SWin:
         with torch.no_grad():
             for i in range(0, num_frames, self.batch_size):
                 frame = framesmats[i:i + self.batch_size].to(self.device) # (batch_size, C, H, W)
-                embedding = self.model.forward_features(frame) # (batch_size, H, W, C)
-
+                embedding = self.model.forward_features(frame) # (batch_size, H, W, C
                 embed1 = self.spatial_attention(embedding.permute(0, 3, 1, 2)) # Spatial Attention: (batch_size, C)
                 embed2 = embedding.mean(dim=(1, 2)) # Global Average Pooling: (batch_size, C)
-
                 combined_embedding = torch.cat([embed1, embed2], dim=1) # (batch_size, 2*C)
                 
                 all_embeddings.append(combined_embedding.cpu())
-                if self.device == "gpu": torch.cuda.empty_cache()
+                if self.device == "cuda": torch.cuda.empty_cache()
         
+        print('extracted.')
         all_embeddings = torch.cat(all_embeddings, dim=0).permute(1, 0)
         return all_embeddings
-
-
-def video2tensor(videos_folder: str, ft_folder: str, target_fps: int, batch_size:tuple, embedding, video_info=False, batch=False):
+        
+def video2tensor(videos_folder: str, ft_folder: str, target_fps: int, batch_size:tuple, embedding, video_info=False, batch=False,evachanged = False):
     """
     Function to extract frames from videos using cv2
 
@@ -158,7 +159,7 @@ def video2tensor(videos_folder: str, ft_folder: str, target_fps: int, batch_size
         fps,frames_cnt = cap.get(cv2.CAP_PROP_FPS),int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         frame_interval = fps/min(target_fps,fps)
         video_basic_info.append({'id':idx,'name':name,'fps':fps,'duration/s':frames_cnt/fps})
-        
+  
         c = 0
         frames = []
         while True:
@@ -173,10 +174,15 @@ def video2tensor(videos_folder: str, ft_folder: str, target_fps: int, batch_size
                 # Our operations on the frame come here
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 frame = cv2.resize(frame, batch_size)
-                frames.append(frame)
+                if evachanged:
+                    frames.append(Image.fromarray(frame))
+                else:
+                    frames.append(frame)
                 
             c += 1
+
         cap.release()
+        
         
         frames_tensor = torch.stack([embedding.transforms(frame) for frame in frames])
         # print(f"extracting features from {name}")
@@ -184,8 +190,9 @@ def video2tensor(videos_folder: str, ft_folder: str, target_fps: int, batch_size
         # print(f"{name} feature extraction completed.")
         # print(f"shape:{features.shape}")
         np.save(os.path.join(ft_folder,f'{name}.npy'),features.numpy())
-        
+        cv2.waitKey(1)
         cv2.destroyAllWindows()
+        cv2.waitKey(1)
         del features,frames_tensor
     
     if video_info:
@@ -208,6 +215,5 @@ if __name__ == "main":
 
     
         
-
 
 
