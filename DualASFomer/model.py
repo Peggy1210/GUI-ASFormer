@@ -6,12 +6,11 @@ from torch import optim
 import copy
 import numpy as np
 import math
-from tqdm import tqdm
+import os
+
+import matplotlib.pyplot as plt
 
 from eval import segment_bars_with_confidence
-
-LOW_RESOLUTION_DIM = 2048
-HIGH_RESOLUTION_DIM = 4096
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -107,47 +106,32 @@ class AttLayer(nn.Module):
         output = output[:, :, 0:L]
         return output * mask[:, 0:1, :]  
         
-    def _block_wise_self_att(self, q, k, v, mask):
+    def _block_wise_self_att(self, q,k,v, mask):
         m_batchsize, c1, L = q.size()
-        _, c2, _ = k.size()
-        _, c3, _ = v.size()
+        _,c2,L = k.size()
+        _,c3,L = v.size()
+        
+        nb = L // self.bl
+        if L % self.bl != 0:
+            q = torch.cat([q, torch.zeros((m_batchsize, c1, self.bl - L % self.bl)).to(device)], dim=-1)
+            k = torch.cat([k, torch.zeros((m_batchsize, c2, self.bl - L % self.bl)).to(device)], dim=-1)
+            v = torch.cat([v, torch.zeros((m_batchsize, c3, self.bl - L % self.bl)).to(device)], dim=-1)
+            nb += 1
 
-        nb = math.ceil(L / self.bl)
-        pad_len = self.bl * nb - L
-        L_pad = L + pad_len
+        padding_mask = torch.cat([torch.ones((m_batchsize, 1, L)).to(device) * mask[:,0:1,:], torch.zeros((m_batchsize, 1, self.bl * nb - L)).to(device)],dim=-1)
 
-        # Pad q, k, v, and mask
-        q = F.pad(q, (0, pad_len))
-        k = F.pad(k, (0, pad_len))
-        v = F.pad(v, (0, pad_len))
-        padding_mask = F.pad(mask[:, 0:1, :], (0, pad_len))
-
-        # Reshape for attention
-        q = q.reshape(m_batchsize, c1, nb, self.bl).permute(0, 2, 1, 3).reshape(-1, c1, self.bl)
-        k = k.reshape(m_batchsize, c2, nb, self.bl).permute(0, 2, 1, 3).reshape(-1, c2, self.bl)
-        v = v.reshape(m_batchsize, c3, nb, self.bl).permute(0, 2, 1, 3).reshape(-1, c3, self.bl)
-        padding_mask = padding_mask.reshape(m_batchsize, 1, nb, self.bl).permute(0, 2, 1, 3).reshape(-1, 1, self.bl)
-
-        # Attention
-        output, _ = self.att_helper.scalar_dot_att(q, k, v, padding_mask)  # output: [B*nb, v_dim // r3, bl]
-        output = self.conv_out(F.relu(output))  # output: [B*nb, v_dim, bl]
-
-        # Now get updated c3 value from output
-        _, c3_out, _ = output.size()
-
-        # Correct reshape using real c3_out
-        try:
-            output = output.reshape(m_batchsize, nb, c3_out, self.bl).permute(0, 2, 1, 3).reshape(m_batchsize, c3_out, L_pad)
-        except Exception as e:
-            raise RuntimeError(
-                f"Invalid reshape in _block_wise_self_att: m_batchsize={m_batchsize}, nb={nb}, "
-                f"c3_out={c3_out}, bl={self.bl}, expected={m_batchsize * nb * c3_out * self.bl}, "
-                f"actual={output.numel()}"
-            ) from e
-
-        output = output[:, :, :L]  # crop padding
-        return output * mask[:, 0:1, :]
-
+        q = q.reshape(m_batchsize, c1, nb, self.bl).permute(0, 2, 1, 3).reshape(m_batchsize * nb, c1, self.bl)
+        padding_mask = padding_mask.reshape(m_batchsize, 1, nb, self.bl).permute(0, 2, 1, 3).reshape(m_batchsize * nb,1, self.bl)
+        k = k.reshape(m_batchsize, c2, nb, self.bl).permute(0, 2, 1, 3).reshape(m_batchsize * nb, c2, self.bl)
+        v = v.reshape(m_batchsize, c3, nb, self.bl).permute(0, 2, 1, 3).reshape(m_batchsize * nb, c3, self.bl)
+        
+        output, attentions = self.att_helper.scalar_dot_att(q, k, v, padding_mask)
+        output = self.conv_out(F.relu(output))
+        
+        output = output.reshape(m_batchsize, nb, c3, self.bl).permute(0, 2, 1, 3).reshape(m_batchsize, c3, nb * self.bl)
+        output = output[:, :, 0:L]
+        return output * mask[:, 0:1, :]  
+    
     def _sliding_window_self_att(self, q,k,v, mask):
         m_batchsize, c1, L = q.size()
         _, c2, _ = k.size()
@@ -266,6 +250,76 @@ class PositionalEncoding(nn.Module):
 
     def forward(self, x):
         return x + self.pe[:, :, 0:x.shape[2]]
+    
+class MultiScaleTemporalAttModule(nn.Module):
+    def __init__(self, input_dim, r, att_type, stage, num_heads, window_sizes=[5, 15, 30]):
+        super().__init__()
+        self.branches = nn.ModuleList([MultiHeadAttLayer(
+                input_dim, input_dim, input_dim,
+                r1=r, r2=r, r3=r,
+                bl=w,                    # Use window size as block size
+                stage=stage,
+                att_type=att_type,
+                num_head=num_heads
+            ) for w in window_sizes])
+        self.conv1d = nn.Conv1d(input_dim * len(window_sizes), input_dim, kernel_size=1)
+
+    def forward(self, x1, x2, mask):
+        outs = [branch(x1, x2, mask) for branch in self.branches]
+        out = torch.cat(outs, dim=1)
+        out = self.conv1d(out)
+        return out
+
+class MultiScaleTemporalConv(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_sizes=[3, 5, 7], dilations=[1, 2, 4]):
+        super().__init__()
+        self.branches = nn.ModuleList([copy.deepcopy(nn.Conv1d(in_channels, in_channels, kernel_size=k, padding=d*(k-1)//2, dilation=d)) for k, d in zip(kernel_sizes, dilations)])
+        self.conv1d = nn.Conv1d(in_channels * len(kernel_sizes), out_channels, kernel_size=1)
+
+    def forward(self, x):
+        # print("input of ms temp conv:", x.shape)
+        outs = [branch(x) for branch in self.branches]
+        out = torch.cat(outs, dim=1)
+        # print("output of ms temp conv:", out.shape)
+        out = self.conv1d(out)
+        # print("output of 1d conv:", out.shape)
+        return out
+
+class Encoder(nn.Module):
+    def __init__(self, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate, att_type, alpha):
+        super(Encoder, self).__init__()
+        # self.mstemp_att = MultiScaleTemporalAttModule(input_dim, r1, att_type, 'encoder', 8, [5, 15, 30])
+        self.mstemp_conv = MultiScaleTemporalConv(input_dim, input_dim)
+        self.conv_1x1 = nn.Conv1d(input_dim, num_f_maps, 1) # fc layer
+        self.layers = nn.ModuleList(
+            [AttModule(2 ** i, num_f_maps, num_f_maps, r1, r2, att_type, 'encoder', alpha) for i in # 2**i
+             range(num_layers)])
+        
+        self.conv_out = nn.Conv1d(num_f_maps, num_classes, 1)
+        self.dropout = nn.Dropout2d(p=channel_masking_rate)
+        self.channel_masking_rate = channel_masking_rate
+
+    def forward(self, x, mask):
+        '''
+        :param x: (N, C, L)
+        :param mask:
+        :return:
+        '''
+
+        if self.channel_masking_rate > 0:
+            x = x.unsqueeze(2)
+            x = self.dropout(x)
+            x = x.squeeze(2)
+
+        # Multistage Temporal
+        # x = self.mstemp_att(x, None, mask) # Attention
+        x = self.mstemp_conv(x) # Convolution
+
+        feature = self.conv_1x1(x)
+        for layer in self.layers:
+            feature = layer(feature, None, mask)
+
+        return feature
 
 class Decoder(nn.Module):
     def __init__(self, num_layers, r1, r2, num_f_maps, input_dim, num_classes, att_type, alpha):
@@ -286,127 +340,132 @@ class Decoder(nn.Module):
 
         return out, feature
 
-class OriginalEncoder(nn.Module):
-    def __init__(self, num_layers, input_dim, num_f_maps):
-        super(OriginalEncoder, self).__init__()
-        self.input_proj = nn.Conv1d(input_dim, num_f_maps, 1)
-        self.layers = nn.ModuleList([
-            AttModule(2 ** i, num_f_maps, num_f_maps, r1=2, r2=2, att_type='block_att', stage='encoder', alpha=1.0)
-            for i in range(num_layers)
-        ])
+class FrameDiffLayer(nn.Module):
+    def __init__(self):
+        super(FrameDiffLayer, self).__init__()
 
-    def forward(self, x, mask):
-        out = self.input_proj(x)
-        for layer in self.layers:
-            out = layer(out, None, mask)
-        return out
-
-class LightweightEncoder(nn.Module):
-    def __init__(self, input_dim, num_f_maps):
-        super(LightweightEncoder, self).__init__()
-        self.input_proj = nn.Conv1d(input_dim, num_f_maps, 1)
-        self.layers = nn.ModuleList([
-            AttModule(2 ** i, num_f_maps, num_f_maps, r1=2, r2=2, att_type='block_att', stage='encoder', alpha=0.8)
-            for i in range(3)
-        ])
-
-    def forward(self, x, mask):
-        out = self.input_proj(x)
-        for layer in self.layers:
-            out = layer(out, None, mask)
-            
-        return out
-
+    def forward(self, x):
+        frameDiff = x[:, :, 1:] - x[:, :, :-1]
+        pad = torch.zeros(x.size(0), x.size(1), 1).to(x.device)
+        frameDiff = torch.cat((pad, frameDiff), dim=2)
+        return frameDiff
+    
 class FusionPredictor(nn.Module):
     def __init__(self, input_dim, num_classes):
         super(FusionPredictor, self).__init__()
         self.fusion_layer = nn.Conv1d(input_dim, num_classes, 1)
 
     def forward(self, x, mask):
-        return self.fusion_layer(x) * mask[:, 0:1, :]
+        return self.fusion_layer(x)
 
-class DualEncoderASFormer(nn.Module):
-    def __init__(self, num_layers, num_f_maps, num_classes):
-        super(DualEncoderASFormer, self).__init__()
-        self.encoder_low = OriginalEncoder(num_layers=num_layers, input_dim=LOW_RESOLUTION_DIM, num_f_maps=num_f_maps)
-        self.encoder_high = LightweightEncoder(input_dim=HIGH_RESOLUTION_DIM, num_f_maps=num_f_maps)
-        self.fusion_predictor = FusionPredictor(input_dim=num_f_maps * 2, num_classes=num_classes)
-        self.decoder_input_proj = nn.Conv1d(num_classes, num_f_maps, 1)  # Fix here: convert class scores to num_f_maps before decoder
-        self.decoders = nn.ModuleList([
-            Decoder(num_layers, 2, 2, num_f_maps, num_f_maps, num_classes, att_type='block_att', alpha=exponential_descrease(s))
-            for s in range(3)
-        ])
-
-    def pad_features(self, x, target_dim):
-        # x: [batch, channels, seq_len]
-        if x.size(1) < target_dim:
-            pad_size = target_dim - x.size(1)
-            pad_tensor = torch.zeros(x.size(0), pad_size, x.size(2)).to(x.device)
-            x = torch.cat([x, pad_tensor], dim=1)
-        return x
+class MyTransformer(nn.Module):
+    def __init__(self, num_decoders, num_layers, r1, r2, num_f_maps, input_dim_low, input_dim_high, num_classes, channel_masking_rate):
+        super(MyTransformer, self).__init__()
+        self.frameDiff = FrameDiffLayer()
+        self.cnn = nn.Sequential(
+            nn.Conv1d(input_dim_high, num_f_maps, kernel_size=1),
+            nn.ReLU(),
+            nn.Conv1d(num_f_maps, num_f_maps, kernel_size=1)
+        )
+        self.encoder = Encoder(num_layers, r1, r2, num_f_maps, input_dim_low, num_classes, channel_masking_rate, att_type='sliding_att', alpha=1)
+        self.decoders = nn.ModuleList([copy.deepcopy(Decoder(num_layers, r1, r2, num_f_maps*2, num_classes, num_classes, att_type='sliding_att', alpha=exponential_descrease(s))) for s in range(num_decoders)]) # num_decoders
+        self.fusion_predictor = FusionPredictor(input_dim=num_f_maps*2, num_classes=num_classes)
 
     def forward(self, x_low, x_high, mask):
-        x_high = self.pad_features(x_high, HIGH_RESOLUTION_DIM)
+        frameDiff_low = self.frameDiff(x_low) # This will be forward to the encoder
+        # print("frameDiff_low:", frameDiff_low.shape)
+        frameDiff_high = self.frameDiff(x_high)
+        # print("frameDiff_high:", frameDiff_high.shape)
 
-        # print("x_low shape: ", x_low.shape)
-        # print("x_high shape: ", x_high.shape)
-        # print("mask shape: ", mask.shape)
+        feature_low = self.encoder(frameDiff_low, mask)
+        # print("feature_low:", feature_low.shape)
+        feature_high = self.encoder(frameDiff_high, mask)
+        # print("feature_high:", feature_high.shape)
+        fused_feature = torch.cat([feature_low, feature_high], dim=1)
+        # print("fused_feature:", fused_feature.shape)
+        scores = self.fusion_predictor(fused_feature, mask)
+        # print("scores:", scores.shape)
 
-        feat_low = self.encoder_low(x_low, mask)
-        # print("feat_low shape after encoder_low:", feat_low.shape)
+        outputs = [scores]
+        # print("outputs:", outputs[0].shape)
 
-        feat_high = self.encoder_high(x_high, mask)
-        # print("feat_high shape after encoder_high:", feat_high.shape)
-
-        fused = torch.cat([feat_low, feat_high], dim=1)
-        # print("fused shape:", fused.shape)
-
-        scores = self.fusion_predictor(fused, mask)
-        # print("scores shape after fusion predictor:", scores.shape)
-
-        outputs = [scores.unsqueeze(0)]
-        projected_scores = self.decoder_input_proj(scores)
-        # print("projected_scores shape for decoder input:", projected_scores.shape)
-
+        feature = fused_feature
+        # print("feature:", feature.shape)
+        out = scores
+        # print("out:", out.shape)
+        
         for decoder in self.decoders:
-            scores, _ = decoder(projected_scores * mask[:, 0:1, :], projected_scores, mask)
-            outputs.append(scores.unsqueeze(0))
-
-        return torch.cat(outputs, dim=0)
-
-
+            out, feature = decoder(out * mask[:, 0:1, :], feature * mask[:, 0:1, :], mask)
+            outputs.append(out)
  
+        return outputs
+
+    
 class Trainer:
-    def __init__(self, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate):
-        print('Initializing Model...')
-        self.model = DualEncoderASFormer(num_layers, num_f_maps, num_classes)
+    def __init__(self, num_decoders, num_layers, r1, r2, num_f_maps, input_dim_low, input_dim_high, num_classes, channel_masking_rate,
+                 pretrained_dir=None, pretrained_name=None, mode='best', test_every=10):
+        self.model = MyTransformer(num_decoders, num_layers, r1, r2, num_f_maps, input_dim_low, input_dim_high, num_classes, channel_masking_rate)
         self.ce = nn.CrossEntropyLoss(ignore_index=-100)
+
+        self.pretrained_dir = pretrained_dir
+        self.pretrained_name = pretrained_name
+        self.mode = mode
+        self.test_every = test_every
 
         print('Model Size: ', sum(p.numel() for p in self.model.parameters()))
         self.mse = nn.MSELoss(reduction='none')
         self.num_classes = num_classes
 
-    def train(self, save_dir, batch_gen, num_epochs, batch_size, learning_rate, batch_gen_tst=None):
-        self.model.train()
+    def train(self, batch_gen, num_epochs, batch_size, learning_rate, batch_gen_tst=None, lmbda=0.15):
+        print("Trained on", device)
         self.model.to(device)
         optimizer = optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=1e-5)
-        print('LR:{}'.format(learning_rate))
-
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
-        for epoch in tqdm(range(num_epochs)):
+
+        losses = []
+        accs = []
+        start_epoch = 0
+        best_acc = -1
+        best_epoch = -1
+        best_model = None
+
+        # Load pretrained model
+        if self.pretrained_name is not None:
+            print("Load pretrained model from", self.pretrained_name)
+            checkpoint = torch.load(self.pretrained_dir + "/" + self.pretrained_name, map_location=device)
+            history = checkpoint['history']
+            
+            if self.mode == 'last':
+                start_epoch = history['epoch']
+                losses = history['loss']
+                accs = history['acc']
+                best_acc = history['best_acc']
+                best_epoch = history['best_epoch']
+                best_model = history['best_model']
+                self.model.load_state_dict(checkpoint['model_state_dict'])
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                print('Resume training from epoch', start_epoch + 1)
+                print('Current best accuracy:', best_acc)
+            elif self.mode == 'best':
+                self.model.load_state_dict(history['best_model'])
+                print('Trained with the best model')
+                print('Previous best accuracy:', history['best_acc'])
+        else:
+            print("Training from scratch")
+
+        self.model.train()
+        for epoch in range(start_epoch, num_epochs):
             epoch_loss = 0
             correct = 0
             total = 0
 
             while batch_gen.has_next():
-                x_low, x_high, batch_target, mask, vids = batch_gen.next_batch(batch_size, False)
-                x_low, x_high = x_low.to(device), x_high.to(device)
+                batch_input_low, batch_input_high, batch_target, mask, vids = batch_gen.next_batch(batch_size, False)
+                batch_input_low, batch_input_high = batch_input_low.to(device), batch_input_high.to(device)
                 batch_target, mask = batch_target.to(device), mask.to(device)
-
                 optimizer.zero_grad()
-                # print("x_low shape: ", x_low.shape)
-                # print("x_high shape: ", x_high.shape)
-                ps = self.model(x_low, x_high, mask)
+                ps = self.model(batch_input_low, batch_input_high, mask)
 
                 loss = 0
                 for p in ps:
@@ -418,68 +477,135 @@ class Trainer:
                 epoch_loss += loss.item()
                 loss.backward()
                 optimizer.step()
-
-                _, predicted = torch.max(ps.data[-1], 1)
+                
+                _, predicted = torch.max(ps[-1], 1)
                 correct += ((predicted == batch_target).float() * mask[:, 0, :].squeeze(1)).sum().item()
                 total += torch.sum(mask[:, 0, :]).item()
 
             scheduler.step(epoch_loss)
             batch_gen.reset()
-            print("[epoch %d]: epoch loss = %f,   acc = %f" % (epoch + 1, epoch_loss / len(batch_gen.list_of_examples),
-                                                               float(correct) / total))
+            loss = epoch_loss / len(batch_gen.list_of_examples)
+            acc = float(correct) / total
+            print("[epoch %d]: epoch loss = %f,   acc = %f" % (epoch + 1, loss, acc))
+            losses.append(loss)
+            accs.append(acc)
 
-            if (epoch + 1) % 10 == 0 and batch_gen_tst is not None:
-                self.test(batch_gen_tst, epoch)
-                torch.save(self.model.state_dict(), save_dir + "/epoch-" + str(epoch + 1) + ".model")
-                torch.save(optimizer.state_dict(), save_dir + "/epoch-" + str(epoch + 1) + ".opt")
+            if (epoch + 1) % self.test_every == 0 and batch_gen_tst is not None:
+                test_acc = self.test(batch_gen_tst, epoch)
+                if test_acc >= best_acc:
+                    best_acc = test_acc
+                    best_epoch = epoch + 1
+                    best_model = self.model.state_dict()
+                print("---[epoch %d]---: tst acc = %f, best acc = %f" % (epoch + 1, test_acc, best_acc))
+
+                torch.save({
+                    'model_state_dict': self.model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'scheduler_state_dict': scheduler.state_dict(),
+                    'history': {
+                        'epoch': epoch + 1,
+                        'loss': losses,
+                        'acc': accs,
+                        'best_acc': best_acc,
+                        'best_epoch': best_epoch,
+                        'best_model': best_model
+                    }
+                }, self.pretrained_dir + "/epoch-" + str(epoch + 1) + ".pkl")
+
+                # plt.figure(figsize=(10, 5))
+                plt.figure(figsize=(5, 5))
+
+                # plt.subplot(1, 2, 1)
+                plt.plot(losses, marker='o')
+                plt.xlabel("Epoch")
+                plt.ylabel("Loss")
+
+                # plt.subplot(1, 2, 2)
+                # plt.plot(accs, marker='o')
+                # plt.xlabel("Epoch")
+                # plt.ylabel("Accuracy")
+
+                plt.tight_layout()
+                plt.savefig(self.pretrained_dir + "/loss_curve.png")
 
     def test(self, batch_gen_tst, epoch):
         self.model.eval()
         correct = 0
         total = 0
-        if_warp = False
+        if_warp = False  # When testing, always false
         with torch.no_grad():
             while batch_gen_tst.has_next():
-                x_low, x_high, batch_target, mask, vids = batch_gen_tst.next_batch(1, if_warp)
-                x_low, x_high = x_low.to(device), x_high.to(device)
-                batch_target, mask = batch_target.to(device), mask.to(device)
-                p = self.model(x_low, x_high, mask)
-                _, predicted = torch.max(p.data[-1], 1)
+                batch_input_low, batch_input_high, batch_target, mask, vids = batch_gen_tst.next_batch(1, if_warp)
+                batch_input_low, batch_input_high = batch_input_low.to(device), batch_input_high.to(device)
+                batch_target, mask =  batch_target.to(device), mask.to(device)
+                p = self.model(batch_input_low, batch_input_high, mask)
+                _, predicted = torch.max(p[-1], 1) 
                 correct += ((predicted == batch_target).float() * mask[:, 0, :].squeeze(1)).sum().item()
                 total += torch.sum(mask[:, 0, :]).item()
 
         acc = float(correct) / total
-        print("---[epoch %d]---: tst acc = %f" % (epoch + 1, acc))
         self.model.train()
         batch_gen_tst.reset()
+        return acc
 
-    def predict(self, model_dir, results_dir, features_path, batch_gen_tst, epoch, actions_dict, sample_rate):
+    def predict(self, results_dir, features_path_low, features_path_high, batch_gen_tst, actions_dict, sample_rate):
+        print("Predict on", device)
         self.model.eval()
         with torch.no_grad():
             self.model.to(device)
-            self.model.load_state_dict(torch.load(model_dir + "/epoch-" + str(epoch) + ".model"))
+            if self.mode == 'last':
+                checkpoint = torch.load(self.pretrained_dir + "/" + self.pretrained_name, map_location=device)
+                print(f"Loading last model (epoch {checkpoint['history']['epoch']})")
+                self.model.load_state_dict(checkpoint['model_state_dict'])
+            elif self.mode == 'best':
+                checkpoint = torch.load(self.pretrained_dir + "/" + self.pretrained_name, map_location=device)
+                print(f"Loading best model (epoch {checkpoint['history']['best_epoch']})")
+                self.model.load_state_dict(checkpoint['history']['best_model'])
+
             batch_gen_tst.reset()
             import time
+            
             time_start = time.time()
             while batch_gen_tst.has_next():
-                x_low, x_high, batch_target, mask, vids = batch_gen_tst.next_batch(1)
+                batch_input_low, batch_input_high, batch_target, mask, vids = batch_gen_tst.next_batch(1)
                 vid = vids[0]
-                x_low, x_high = x_low.to(device), x_high.to(device)
-                batch_target, mask = batch_target.to(device), mask.to(device)
-                predictions = self.model(x_low, x_high, mask)
+                features_low = np.load(features_path_low + vid.split('.')[0] + '.npy')
+                features_high = np.load(features_path_high + vid.split('.')[0] + '.npy')
+                features_low = features_low[:, ::sample_rate]
+                features_high = features_high[:, ::sample_rate]
 
-                for i in range(len(predictions)):
-                    confidence, predicted = torch.max(F.softmax(predictions[i], dim=1).data, 1)
+                input_x_low, input_x_high = torch.tensor(features_low, dtype=torch.float), torch.tensor(features_high, dtype=torch.float)
+                input_x_low.unsqueeze_(0)
+                input_x_high.unsqueeze_(0)
+                input_x_low, input_x_high = input_x_low.to(device), input_x_high.to(device)
+                # batch_input_low, batch_input_high = batch_input_low.to(device), batch_input_high.to(device)
+                # batch_target, mask = batch_target.to(device), mask.to(device)
+                ### Pay attention to the 
+                predictions = self.model(input_x_low, input_x_high, torch.ones(input_x_low.size(), device=device))
+
+                f_name = vid.split('/')[-1].split('.')[0]
+                for stg in range(len(predictions)):
+                    confidence, predicted = torch.max(F.softmax(predictions[stg], dim=1).data, 1)
                     confidence, predicted = confidence.squeeze(), predicted.squeeze()
                     batch_target = batch_target.squeeze()
-                    segment_bars_with_confidence(results_dir + '/{}_stage{}.png'.format(vid, i),
+                    confidence, predicted = confidence.squeeze(), predicted.squeeze()
+ 
+                    segment_bars_with_confidence(results_dir + '/{}_stage{}.png'.format(f_name, stg),
                                                  confidence.tolist(),
                                                  batch_target.tolist(), predicted.tolist())
 
-                recognition = []
-                for i in range(len(predicted)):
-                    recognition = np.concatenate((recognition, [list(actions_dict.keys())[list(actions_dict.values()).index(predicted[i].item())]] * sample_rate))
-                f_name = vid.split('/')[-1].split('.')[0]
-                with open(results_dir + "/" + f_name, "w") as f_ptr:
-                    f_ptr.write("### Frame level recognition: ###\n")
-                    f_ptr.write(' '.join(recognition))
+                    recognition = []
+                    for i in range(len(predicted)):
+                        recognition = np.concatenate((recognition, [list(actions_dict.keys())[
+                                                                        list(actions_dict.values()).index(
+                                                                            predicted[i].item())]] * sample_rate))
+
+                    with open(results_dir + "/" + f_name + "_stage" + str(stg), "w") as f_ptr:
+                        f_ptr.write("### Frame level recognition: ###\n")
+                        f_ptr.write('\n'.join(recognition))
+            time_end = time.time()
+            
+            
+
+if __name__ == '__main__':
+    pass
