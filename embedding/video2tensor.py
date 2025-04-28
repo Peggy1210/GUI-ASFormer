@@ -182,7 +182,10 @@ def video2tensor(videos_folder: str, ft_folder: str, target_fps: int, batch_size
             c += 1
 
         cap.release()
-        
+        # ========== Skip if no frames ==========
+        if len(frames) < 2:
+            print(f"⚠️ Skipping video #{idx}: {video_path} — only {len(frames)} frame(s)")
+            continue        
         
         frames_tensor = torch.stack([embedding.transforms(frame) for frame in frames])
         # print(f"extracting features from {name}")
