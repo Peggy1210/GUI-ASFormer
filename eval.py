@@ -203,7 +203,7 @@ def func_eval(dataset, recog_path, file_list, stage):
 
 def main():
     cnt_split_dict = {
-        'website':2
+        'website': 5
     }
     
     parser = argparse.ArgumentParser()
